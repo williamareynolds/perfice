@@ -177,7 +177,17 @@ class Stack:
         binaries = build_all()
         for spec in config.service_specs():
             svc = ServiceProcess(spec, binaries[spec.name], config.LOG_DIR / f"{spec.name}.log")
-            svc.start()
+            try:
+                svc.start()
+            except Exception:
+                # Without this, a service that fails to boot leaves everything
+                # started before it running. The pytest fixture never reaches
+                # its teardown (start() raised before the yield), so those
+                # processes outlive the session and the *next* run fails with
+                # "address already in use" -- pointing at the wrong service.
+                self.services[spec.name] = svc
+                self.stop()
+                raise
             self.services[spec.name] = svc
 
     def implementations(self) -> dict[str, str]:

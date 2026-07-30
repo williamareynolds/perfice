@@ -9,8 +9,8 @@ service is only considered done when the suite passes against it.
 | Service | State |
 | --- | --- |
 | `auth` | **Ported.** Passes the full suite. |
+| `gateway` | **Ported.** Passes the full suite. |
 | `sync` | Not started. |
-| `gateway` | Not started. |
 | `integration` | Not started. |
 
 Not yet ported within auth: the mail-dependent flows (email confirmation,
@@ -43,8 +43,8 @@ crates/
   common/       shared: config, error mapping, identity guard, mongo, password, bytes
   proto/        tonic bindings generated from ../proto/auth.proto
   auth/         accounts, sessions, JWT, gRPC + HTTP
+  gateway/      routing, CORS, bearer auth, request forwarding
   sync/         (placeholder)
-  gateway/      (placeholder)
   integration/  (placeholder)
 ```
 
@@ -81,6 +81,10 @@ data.
 - **Error mapping.** `common::ApiError` is the only path to a response status.
   Validation is 400, missing/revoked credentials 401, unknown routes 404, and
   anything else is logged and returned as a bare 500 with no body.
+- **CORS cannot use wildcard methods.** `Allow-Credentials: true` alongside
+  `Allow-Methods: *` is invalid per spec, and tower-http panics at startup
+  rather than at request time. The gateway enumerates the method list Fiber was
+  defaulting to.
 - **Email normalisation is ASCII-only.** Folding with a full Unicode mapping is
   not a round trip (U+FB00 uppercases to "FF"), which made such accounts
   permanently unreachable. Round-trip safety is the requirement, not parity
