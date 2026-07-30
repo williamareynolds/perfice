@@ -1,4 +1,15 @@
-docker push ghcr.io/p0lloc/perfice_auth:latest
-docker push ghcr.io/p0lloc/perfice_integration:latest
-docker push ghcr.io/p0lloc/perfice_sync:latest
-docker push ghcr.io/p0lloc/perfice_gateway:latest
+#!/usr/bin/env sh
+# Pushes the service images built by build.sh.
+#
+#   ./push.sh            # all four
+#   ./push.sh auth sync  # just these
+set -eu
+
+REGISTRY="${REGISTRY:-ghcr.io/p0lloc}"
+TAG="${TAG:-latest}"
+
+services="${*:-auth sync gateway integration}"
+
+for service in $services; do
+    docker push "$REGISTRY/perfice_$service:$TAG"
+done

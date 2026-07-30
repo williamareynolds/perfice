@@ -1,64 +1,30 @@
-# Rust Port (in progress)
+# Rust Port (complete)
 
-Started 2026-07-30. Cargo workspace at `server/rust/`, axum + tokio. The e2e suite (`mem:server/e2e_tests`) is the spec — a service is done when the suite passes against it. Full docs in `server/rust/README.md`.
+Done 2026-07-30. Cargo workspace at `server/rust/`, axum + tokio. The e2e suite (`mem:server/e2e_tests`) was the spec — a service counted as done when the suite passed against it. Full docs in `server/rust/README.md`.
 
-## Status
+**All four services are ported. 247/247 e2e tests pass on all-Rust, in 3m34s against Go's 6m10s. The Go implementation was deleted in the same session**; `server/proto/auth.proto` survives as the gRPC contract, the generated `*.pb.go` did not.
 
-| Service | State |
-|---|---|
-| `auth` | **Ported and validated** |
-| `gateway` | **Ported and validated** |
-| `sync` | **Ported and validated** — including the stateful model test |
-| `integration` | Placeholder crate only; still Go |
+## How it was done, and why that mattered
 
-All 212 tests pass with auth+gateway+sync on Rust and integration on Go.
+One service at a time, validated against the suite with a **mixed stack** after each step. That worked because both implementations shared the database, the Kafka topic (`my-topic`, event name in the message key) and the `.proto`. The harness selected an implementation per service via `PERFICE_E2E_IMPL_<NAME>`; that machinery is gone now that Go is.
 
-## Integration: what a port actually involves
+The order was auth -> gateway -> sync -> integration, cheapest-to-verify first.
 
-The e2e suite covers only part of this service, so "passes the suite" is **not** the same as "ported" here. Covered: provider definition loading at boot, user-integration CRUD, webhook ingestion with field extraction, identifier-keyed idempotency, updates list/ack, per-user scoping, auth gating.
+## Traps hit, worth not re-learning
 
-**Not covered by any test** — porting these blind is the real risk:
-- OAuth2 authorization-code and refresh flows (`internal/auth/oauth.go`, `service/auth.go`)
-- The gocron scheduler: one job per user-integration, scheduled in the user's timezone fetched over gRPC, with cron jitter (`service/scheduler.go`)
-- Historical backfill (`FetchHistorical`)
-- At-rest encryption of OAuth tokens and payloads via the `encrypt:"true"` bson tag and `mongoutil` (XChaCha20-Poly1305, key from `ENCRYPTION_KEY` read once at package init)
-- Integration logs (`collection/integration_log.go`)
+- **jsonwebtoken 11 panics at runtime** with "Could not automatically determine the process-level CryptoProvider". Fixed with `--no-default-features --features rust_crypto`.
+- **Rust debug builds make the e2e suite look hung** — argon2 at 64 MiB/t=3 unoptimized takes seconds per hash. The harness always builds `--release`.
+- **tower-http CORS panics** on `Access-Control-Allow-Credentials: true` with `Allow-Methods: *`. Methods must be enumerated.
+- **`Vec<u8>` silently becomes a JSON/BSON integer array.** Go's `[]byte` is base64 in JSON and binary in BSON. Sync needs `serde_bytes` on stored documents and a base64 module on wire DTOs; getting this wrong fails quietly.
+- **The e2e harness leaked processes** when `Stack.start()` raised before the fixture's yield, so the next run failed with "address already in use" pointing at the wrong service. It now stops whatever it started before re-raising.
 
-A port that satisfies the suite while dropping these would look finished and would not be. Either extend the suite first, or port them with the Go source open alongside.
+## Deliberate divergences from Go
 
-Rust crate equivalents to reach for: `oauth2` for the flows, `tokio-cron-scheduler` for gocron, `serde_json_path` or `jsonpath-rust` for the `$.field` extraction in `service/path_aggregators.go`, `chacha20poly1305` for the at-rest encryption.
+- Storage encoding of encrypted fields differs (BSON document vs Go's gob). Same primitive and key; nothing reads both.
+- `integration` accepts a five-field cron (normalised to six). Go's scheduler rejects it, leaving an integration that silently never runs.
+- A five-field JSON Schema that fails to compile now *rejects* payloads rather than being skipped.
+- The `len` path aggregator stays unregistered, exactly as in Go — registering it would change what existing definitions mean.
 
-Not ported inside auth: mail-dependent flows (email confirmation, password reset). No mail service is configured anywhere, so those routes are inert in Go too; `http::mail_disabled` answers them with the same 400 rather than 404, keeping observable behaviour identical.
+## Not ported
 
-## Hybrid harness — the key enabler
-
-`PERFICE_E2E_IMPL_<SERVICE>=go|rust` (or `PERFICE_E2E_IMPL` for all) picks the implementation per service; default go. Both implementations share the database, the Kafka topic (`my-topic`) and the `.proto`, so mixing is expected, not a special case. Each run prints the implementation matrix. Retargeting needed no test changes — the suite never referenced Go.
-
-## Crate layout
-
-`crates/common` (config, error mapping, identity guard, mongo, password, bytes, random, telemetry), `crates/proto` (tonic bindings built from `../../proto/auth.proto` via build.rs — the .proto is shared verbatim, never duplicated), then `auth`, `sync`, `gateway`, `integration`.
-
-The proto has no `package` declaration, so the generated module is `_`: `tonic::include_proto!("_")`.
-
-## What compatibility actually means
-
-Confirmed by the user 2026-07-30: **there is no existing database.** Nothing has to match Go's stored shapes or cost parameters. Only two things are fixed:
-
-1. **The JSON wire format** — the Svelte client in `client/` consumes it and is not being rewritten. This is what the e2e suite pins.
-2. **Go interop for services not yet ported**, and only while a mixed stack is run: the shared `.proto` and the Kafka topic name (`my-topic`, event name in the message key). Both can be cleaned up once all four services are Rust.
-
-Storage layout, hashing costs and internal naming are free to change.
-
-## Compatibility traps (each one cost a debugging cycle or would have)
-
-- **argon2 params are now OWASP interactive** (m=19456, t=2, p=1), not Go's RFC 9106 second option (m=65536, t=3, p=4). The pinning existed only for hash interop and was the dominant cost in the suite: dropping it took the common-crate tests from 18.4s to 2.2s. Parameters are stated explicitly rather than using `Argon2::default()` so a crate-default change is a deliberate decision. Verification stays parameter-agnostic (reads the PHC string), so costs can be raised later without invalidating rows — covered by a test.
-- **Release builds are mandatory.** argon2 at 64 MiB/3 passes unoptimized takes seconds per login — the suite appears to hang rather than fail. The harness always runs `cargo build --release`.
-- **Byte fields have two shapes.** Go's `[]byte` is base64 in JSON and binary in BSON; Rust's `Vec<u8>` is an integer array in both by default. Use `common::bytes::base64_bytes` on wire DTOs, `serde_bytes` on stored documents. Getting this wrong is silent — data round-trips within one implementation and is unreadable to the other.
-- **jsonwebtoken v11 needs an explicit crypto provider feature** (`rust_crypto`), otherwise it panics at first use with "Could not automatically determine the process-level CryptoProvider".
-- **`go get` in `util` bumped the go directive to 1.25.0** because `x/crypto` v0.52+ declares it. Pin `x/crypto`/`x/sys`/`x/text` to the versions the other modules use.
-
-## Conventions established
-
-- `common::ApiError` is the only path to a response status: 400 validation, 401 missing/revoked credentials, 404 unknown route, everything else logged and returned as a bare 500 with no body. `ApiError::WithBody` exists for the endpoints whose exact body the suite compares (login must return byte-identical responses for unknown-email and wrong-password).
-- `Identity` / `UserIdentity` extractors enforce the internal secret *and* read the identity headers, so no handler can forget the guard. `UserIdentity` exists because the integration service never looks at the session id.
-- Services panic at boot on missing required config (`config::require`), matching Go.
+Auth's mail-dependent flows (email confirmation, password reset). No mail service is configured anywhere, so they were inert in Go too; `http::mail_disabled` answers them with the same 400. Porting them means adding the `accountTokens` collection and a Maileroo client.

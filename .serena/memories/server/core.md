@@ -1,41 +1,31 @@
 # Server — Core
 
-Optional Go backend in `server/`. The client is fully functional without it; it only adds accounts, cross-device sync, and third-party integrations.
+Optional Rust backend in `server/rust/`. The client is fully functional without it; it only adds accounts, cross-device sync, and third-party integrations.
 
-## Modules — each an independent Go module, no `go.work`
+Originally Go; rewritten in Rust and the Go implementation deleted 2026-07-30. See `mem:server/rust_port`. The per-service memories below still describe *behaviour* accurately, but any Go file path in them is historical — the equivalent now lives under `server/rust/crates/<service>/src/`.
 
-| Path | Role | Ports | Memory |
+## Crates — one Cargo workspace at `server/rust`
+
+| Crate | Role | Ports | Memory |
 |---|---|---|---|
-| `gateway/` | sole public entry; validates JWT, reverse-proxies everything else | 3000 | `mem:server/gateway` — forwarding DSL + the header-trust security model |
-| `auth/` | accounts, sessions, JWT, timezones | gRPC 5001, HTTP 8081 | `mem:server/auth` — gRPC contract, generated proto, optional mail |
-| `sync/` | encrypted-blob replication | 8082 | `mem:server/sync` — zero-knowledge invariant, hardcoded entity-type list |
-| `integration/` | third-party OAuth, scheduled pulls, webhooks | 8080 | `mem:server/integration` — DB-driven provider defs, gocron, at-rest encryption |
-| `util/`, `mongoutil/`, `proto/` | shared libs | — | — |
+| `gateway` | sole public entry; validates JWT, reverse-proxies everything else | 3000 | `mem:server/gateway` — forwarding rules + the header-trust security model |
+| `auth` | accounts, sessions, JWT, timezones | gRPC 5001, HTTP 8081 | `mem:server/auth` — gRPC contract, optional mail |
+| `sync` | encrypted-blob replication | 8082 | `mem:server/sync` — zero-knowledge invariant, hardcoded entity-type list |
+| `integration` | third-party OAuth, scheduled pulls, webhooks | 8080 | `mem:server/integration` — DB-driven provider defs, scheduler, at-rest encryption |
+| `common`, `proto` | shared: config, errors, identity, mongo, password, random / tonic bindings | — | — |
 
-Libraries are wired by `replace perfice.adoe.dev/util => ../util` directives, so a change to `util`/`mongoutil`/`proto` hits all four services immediately with no version bump — and each service must be rebuilt/retested separately.
+One workspace, so a change to `common` or `proto` rebuilds every dependent service automatically. `server/proto/auth.proto` is the gRPC contract, compiled by `crates/proto/build.rs`.
 
 ## Cross-cutting patterns
 
 - **Trust boundary**: only the gateway authenticates. Backends read identity from `X-Userid` / `X-Sessionid` headers without verification, but now also require a shared `X-Internal-Secret` proving the request came through the gateway. `INTERNAL_SECRET` must be identical across all four services and **every service panics at boot without it**. Backend ports must still stay private. Details in `mem:server/gateway`.
-- **Errors**: all four services use `util.NewErrorHandler`, which honours `*fiber.Error` statuses and maps validator failures to 400. See `mem:server/hardening_2026_07` for the full set of behaviour fixes applied ahead of the Rust rewrite.
-- **Shape**: `cmd/<name>/<name>.go` is a 5-line main calling `NewXApp()` + `Init()`; everything real is in `internal/`. `auth` and `sync` keep `internal/` flat as `package internal`; `integration` subdivides into `collection/controller/service/model`.
-- **HTTP**: Fiber v2 everywhere, with `recover` middleware and an `ErrorHandler` that logs, reports to Sentry, and returns bare 500.
-- **Config**: env vars only, no config files. `_ "github.com/joho/godotenv/autoload"` in every app means a `.env` in the working directory is loaded implicitly. Missing vars are generally not validated — services boot and fail later.
-- **Failure style**: `panic` on Mongo connect/ping and on `Load()` errors, i.e. bad config or bad data = crash loop at boot. Sentry is initialised *after* Mongo connect in each app, so boot-time panics go unreported.
+- **Errors**: `perfice_common::error::ApiError` maps each variant to a status; only `Internal` produces a bare 500, and it logs the cause. See `mem:server/hardening_2026_07` for the behaviour fixes applied ahead of the rewrite.
+- **Shape**: each crate is a `main.rs` that reads config, wires services and serves; behaviour lives in sibling modules. `integration` is the only one large enough to need a map — see its README section.
+- **HTTP**: axum 0.8 everywhere, handlers returning `ApiResult<impl IntoResponse>`.
+- **Config**: env vars only, no config files, no `.env` loading. `perfice_common::config::require` **panics at boot** on a missing variable, so a misconfigured service never comes up looking healthy.
 - **User deletion** fans out over Kafka: auth publishes, sync and integration consume and purge. Any new per-user store needs its own consumer or data outlives the account.
-- **Mongo**: one database per service (`auth`, `sync`, `integration`), never shared. Fields tagged `encrypt:"true"` are transparently encrypted by `mongoutil` using `ENCRYPTION_KEY`.
+- **Mongo**: one database per service (`auth`, `sync`, `integration`), never shared. Must be a replica set — sync uses a transaction. Provider OAuth tokens and fetched payloads are encrypted at rest with `ENCRYPTION_KEY` (XChaCha20-Poly1305).
 
 ## Testing
 
-`server/e2e/` holds a Python/pytest black-box conformance suite covering all four services through the gateway — 194 tests, including hypothesis property tests and a stateful model of the sync protocol. It was built as the safety net for a planned Rust rewrite, and its `characterization`-marked tests document the backend's surprising behaviours. Read `mem:server/e2e_tests` before changing any backend behaviour.
-
-## Symbol navigation limits (gopls, no go.work)
-
-Because each service is its own module with no `go.work`, gopls treats them as separate workspaces. Consequences for Serena's symbol tools:
-- Within-module `find_symbol` / `find_referencing_symbols` work normally.
-- **Cross-module references return empty, not an error.** Looking up who calls a `util`/`mongoutil`/`proto` symbol from a service silently yields `{}` — fall back to `search_for_pattern` for those.
-- Go methods are indexed at top level by bare name (`replaceURLVariables`), not nested under their receiver (`IntegrationVariableEvaluator/replaceURLVariables`, which does not resolve).
-
-## docker-compose.yml is not a working config
-
-It pulls published `ghcr.io/p0lloc/perfice_*:latest` images (it does **not** build local source) and its values are placeholders: `MONGO_URL: mongodb://localhost:27017` (localhost inside a container — wrong, and no mongo service is even defined), `JWT_SECRET: supersecret`, `XXXX` Sentry DSNs and `ENCRYPTION_KEY`. Treat it as a topology sketch. Real self-host instructions are at `docs/selfhost` and perfice.adoe.dev/docs/selfhost.
+`server/e2e/` holds a Python/pytest black-box conformance suite covering all four services through the gateway — 247 tests, including hypothesis property tests and a stateful model of the sync protocol. It was the safety net for the Rust rewrite and is now the backend's specification. Read `mem:server/e2e_tests` before changing any backend behaviour.

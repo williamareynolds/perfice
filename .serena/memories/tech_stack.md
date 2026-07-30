@@ -17,6 +17,8 @@
 - `VITE_BACKEND_URL` (in `client/.env` / `.env.development`) sets the default backend; users can override at runtime via the globe icon in settings.
 
 ## Server (`server/`)
-- Go 1.24.3. Five independent modules, each its own `go.mod`, no `go.work`: `auth`, `sync`, `integration`, `gateway`, plus libs `util`, `mongoutil`, `proto`. Cross-module deps use `replace ... => ../util` directives.
-- MongoDB, Kafka (KRaft mode), gRPC + protobuf (auth is exposed over gRPC to the others), Sentry.
-- Each service has its own `Dockerfile` and `build-*.sh`; `server/docker-compose.yml` runs prebuilt `ghcr.io/p0lloc/perfice_*` images.
+- **Rust**, edition 2024, one Cargo workspace at `server/rust`. Four binaries — `auth`, `gateway`, `sync`, `integration` — plus `common` (config, error mapping, identity guard, mongo, password, random) and `proto` (tonic bindings). `unsafe_code = "forbid"` workspace-wide.
+- axum 0.8, tokio 1.53, tonic 0.14, mongodb 3.8, jsonwebtoken 11 (`rust_crypto` feature — the default provider panics at runtime), argon2 0.5, reqwest 0.13 (rustls), chacha20poly1305, rdkafka (cmake-build).
+- MongoDB (must be a replica set), Kafka (KRaft mode), gRPC + protobuf (auth is exposed over gRPC to the others). No Sentry; logging is `tracing` and `RUST_LOG`.
+- **The Go implementation was deleted 2026-07-30** after the Rust port passed the full e2e suite. `server/proto/auth.proto` survives as the gRPC contract; the generated `*.pb.go` did not. See `mem:server/rust_port`.
+- One `server/Dockerfile` builds all four (`--build-arg SERVICE=<name>`, context `server/`); `build.sh` / `push.sh` drive it. `server/docker-compose.yml` runs the published `ghcr.io/p0lloc/perfice_*` images.

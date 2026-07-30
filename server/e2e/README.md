@@ -1,16 +1,16 @@
 # Backend end-to-end suite
 
 A black-box conformance suite for the Perfice backend, written against the HTTP
-surface rather than against Go. It exists to make the planned Rust rewrite
-safe: point these tests at the new implementation and they will tell you where
-it diverges from the Go one.
+surface. It was built to make the Go-to-Rust rewrite safe, and it did: the Rust
+implementation was validated service by service against these tests, which are
+now the backend's specification.
 
-Nothing here imports Go code or touches Mongo except to assert on stored state,
-so the suite is implementation-agnostic by construction.
+Nothing here imports service code, or touches Mongo except to assert on stored
+state, so the suite is implementation-agnostic by construction.
 
 ## Running
 
-Requires Docker, a Go toolchain (to build the services under test) and
+Requires Docker, a Rust toolchain (to build the services under test) and
 [uv](https://docs.astral.sh/uv/).
 
 ```bash
@@ -34,13 +34,13 @@ caches provider definitions at boot -- see `reloaded_integration` in
 
 ## How the stack is assembled
 
-`docker-compose.yml` runs **only** Mongo and Kafka. The Go services are built
-from local source and run as host processes by `harness/services.py`, which
-keeps their logs available in `.logs/` when something fails.
+`docker-compose.yml` runs **only** Mongo and Kafka. The services themselves are
+built from local source and run as host processes by `harness/services.py`,
+which keeps their logs available in `.logs/` when something fails.
 
 Two details are load-bearing:
 
-- **Mongo runs as a single-node replica set.** `SyncService.Push` uses a
+- **Mongo runs as a single-node replica set.** Applying a sync update uses a
   transaction, which a standalone mongod cannot serve. The container listens on
   the same port it publishes (27117) so one address is valid both inside and
   outside Docker.
@@ -142,17 +142,22 @@ folds ASCII only, and the replacement property asserts the guarantee directly:
 whatever the user typed, minus ASCII case and surrounding whitespace, always
 logs back in.
 
-## Porting checklist
+## What this suite was for
 
-1. Run the suite against Go and record the result as the baseline.
-2. Point `harness/config.py` at the Rust binaries (only `service_specs()`
-   needs to change; the tests never reference Go).
-3. Work until non-`characterization` tests pass -- those are the intended
-   contract, and they already encode the corrected behaviour rather than the
-   original Go quirks.
-4. Go through the three remaining `characterization` tests and decide:
-   reproduce, or change and rewrite the test with a note saying why.
+The Go backend has been replaced by the Rust one in `server/rust`, and this
+suite is how that was done safely:
 
-Note that `INTERNAL_SECRET` is mandatory: a Rust port must refuse to start
-without it and must reject requests lacking `X-Internal-Secret`, or
-`TestBackendsRequireTheGatewaySecret` will fail.
+1. Write the tests against Go and record the result as the baseline. Pin
+   surprising behaviour with `characterization` rather than fixing it, so the
+   baseline is what the code *does*, not what it ought to do.
+2. Use the suite to drive a round of fixes, turning most of those
+   characterizations into intended behaviour (the table above).
+3. Port one service at a time, running the suite with a mixed stack after each,
+   until all four are Rust.
+
+The suite never referenced Go and does not reference Rust; that is what made
+step 3 a series of small, verifiable moves rather than one cutover.
+
+Note that `INTERNAL_SECRET` is mandatory: every service refuses to start
+without it and rejects requests lacking `X-Internal-Secret`, which
+`TestBackendsRequireTheGatewaySecret` asserts.

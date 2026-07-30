@@ -1,10 +1,10 @@
 """Thin HTTP client for the backend, plus a Device abstraction.
 
 Everything goes through the gateway by default, because the gateway is the
-public contract a Rust rewrite has to reproduce. Tests that specifically probe
+public contract. Tests that specifically probe
 the trust boundary talk to the backends directly.
 
-Go marshals []byte as base64 in JSON, so `data`, `key` and `salt` cross the
+Byte payloads are base64 in JSON, so `data`, `key` and `salt` cross the
 wire as base64 strings. The helpers here take and return raw `bytes` and do the
 encoding, so tests never have to think about it.
 """

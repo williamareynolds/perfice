@@ -35,7 +35,7 @@ project_name: "perfice"
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 language_servers:
 - svelte
-- go
+- rust
 - python
 
 # the encoding used by text files in the project

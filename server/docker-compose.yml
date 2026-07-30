@@ -1,3 +1,24 @@
+# Deployment reference for the four backend services.
+#
+# Values here are placeholders. Two of them are not optional to change:
+#
+#   INTERNAL_SECRET   Must be the same across all four services, and secret.
+#                     Only the gateway authenticates; the others trust the
+#                     X-Userid / X-Sessionid headers it injects, and this
+#                     header is what proves a request came through it. A
+#                     backend reachable without it is account impersonation.
+#   ENCRYPTION_KEY    Exactly 32 bytes. Encrypts provider OAuth tokens and
+#                     fetched payloads at rest. Changing it makes existing
+#                     credentials undecryptable.
+#
+# Note also that **only the gateway publishes a port**. That is the whole
+# security model: the backends are reachable on the `perfice` network only.
+# Publishing one of them would expose a service that accepts identity headers
+# at face value.
+#
+# MONGO_URL points at a Mongo you run yourself. It must be a replica set --
+# sync uses a transaction, which a standalone mongod refuses.
+
 networks:
   perfice:
     driver: bridge
@@ -10,14 +31,19 @@ services:
       INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
       GRPC_PORT: 5001
       HTTP_PORT: 8081
-      MONGO_URL: mongodb://localhost:27017
-      JWT_SECRET: supersecret
+      MONGO_URL: mongodb://host.docker.internal:27017/?replicaSet=rs0
+      JWT_SECRET: CHANGE_ME
       KAFKA_URL: kafka:9092
-      SENTRY_DSN: https://XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX@XXXXXXX.ingest.us.sentry.io/XXXXXXXXXXXXXXXX
-      BACKEND_BASE_URL: https://backend.com
-      APP_BASE_URL: https://localhost/new
+      BACKEND_BASE_URL: https://backend.example.com
+      APP_BASE_URL: https://app.example.com/new
+      # MAILEROO_API_KEY unset: with no mail service, email confirmation is
+      # skipped and the password-reset routes answer 400.
+      RUST_LOG: info
     networks:
       - perfice
+    depends_on:
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
 
   sync:
@@ -26,10 +52,10 @@ services:
     environment:
       INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
       PORT: 8082
-      MONGO_URL: mongodb://localhost:27017
+      MONGO_URL: mongodb://host.docker.internal:27017/?replicaSet=rs0
       AUTH_GRPC_URL: auth:5001
       KAFKA_URL: kafka:9092
-      SENTRY_DSN: https://XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX@XXXXXXX.ingest.us.sentry.io/XXXXXXXXXXXXXXXX
+      RUST_LOG: info
     networks:
       - perfice
     depends_on:
@@ -37,24 +63,6 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
-    restart: unless-stopped
-
-  gateway:
-    image: ghcr.io/p0lloc/perfice_gateway:latest
-    container_name: gateway
-    ports:
-      - "3000:3000"
-    environment:
-      INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
-      AUTH_GRPC_URL: auth:5001
-      AUTH_HTTP_URL: http://auth:8081
-      SYNC_URL: http://sync:8082
-      INTEGRATION_URL: http://integration:8080
-      PORT: 3000
-      CORS_EXTRA_ORIGINS: http://localhost:5174
-      SENTRY_DSN: https://XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX@XXXXXXX.ingest.us.sentry.io/XXXXXXXXXXXXXXXX
-    networks:
-      - perfice
     restart: unless-stopped
 
   integration:
@@ -62,13 +70,15 @@ services:
     container_name: integration
     environment:
       INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
-      MONGO_URL: mongodb://localhost:27017
       PORT: 8080
-      CALLBACK_URL_BASE: http://localhost:3000
+      MONGO_URL: mongodb://host.docker.internal:27017/?replicaSet=rs0
       AUTH_GRPC_URL: auth:5001
       KAFKA_URL: kafka:9092
-      SENTRY_DSN: https://XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX@XXXXXXX.ingest.us.sentry.io/XXXXXXXXXXXXXXXX
-      ENCRYPTION_KEY: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      # Where providers redirect a browser back to after authorization, so it
+      # must be the public gateway origin rather than anything internal.
+      CALLBACK_URL_BASE: https://backend.example.com
+      ENCRYPTION_KEY: CHANGE_ME_EXACTLY_32_BYTES_LONG_
+      RUST_LOG: info
     networks:
       - perfice
     depends_on:
@@ -76,6 +86,28 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The only service with a published port.
+  gateway:
+    image: ghcr.io/p0lloc/perfice_gateway:latest
+    container_name: gateway
+    ports:
+      - "3000:3000"
+    environment:
+      INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
+      PORT: 3000
+      AUTH_GRPC_URL: auth:5001
+      AUTH_HTTP_URL: http://auth:8081
+      SYNC_URL: http://sync:8082
+      INTEGRATION_URL: http://integration:8080
+      CORS_EXTRA_ORIGINS: http://localhost:5174
+      RUST_LOG: info
+    networks:
+      - perfice
+    depends_on:
+      auth:
+        condition: service_started
     restart: unless-stopped
 
   kafka:

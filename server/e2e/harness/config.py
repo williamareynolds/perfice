@@ -6,7 +6,6 @@ collide with a test run.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,8 +51,8 @@ DB_AUTH = "auth"
 DB_SYNC = "sync"
 DB_INTEGRATION = "integration"
 
-# Mirrors sync/internal/app.go NewSyncApp().entityTypes. If the Rust port
-# changes this list, these tests are where it will show up first.
+# Mirrors ENTITY_TYPES in rust/crates/sync/src/model.rs. This list is the
+# contract with the client's Dexie tables; changing it shows up here first.
 SYNC_ENTITY_TYPES = [
     "trackables",
     "variables",
@@ -79,27 +78,6 @@ SYNC_OPERATIONS = ["create", "put", "delete", "fullSync"]
 
 RUST_DIR = SERVER_DIR / "rust"
 
-# Which implementation to run for each service. Set per service with
-# PERFICE_E2E_IMPL_<NAME> (go|rust), or for all of them at once with
-# PERFICE_E2E_IMPL. Defaults to go.
-#
-# Mixing is supported and is the point: the two implementations share the same
-# database, the same Kafka topic and the same .proto, so a single service can be
-# swapped and validated against the suite while the rest stay on Go.
-IMPLEMENTATIONS = ("go", "rust")
-
-
-def implementation_for(service: str) -> str:
-    chosen = os.environ.get(
-        f"PERFICE_E2E_IMPL_{service.upper()}",
-        os.environ.get("PERFICE_E2E_IMPL", "go"),
-    ).lower()
-    if chosen not in IMPLEMENTATIONS:
-        raise ValueError(
-            f"unknown implementation {chosen!r} for {service}; expected one of {IMPLEMENTATIONS}"
-        )
-    return chosen
-
 
 @dataclass(frozen=True)
 class ServiceSpec:
@@ -110,28 +88,8 @@ class ServiceSpec:
     ready_ports: tuple[int, ...] = ()
 
     @property
-    def implementation(self) -> str:
-        return implementation_for(self.name)
-
-    # --- Go build -----------------------------------------------------------
-    @property
-    def go_module_dir(self) -> Path:
-        return SERVER_DIR / self.name
-
-    @property
-    def go_package(self) -> str:
-        # The gateway is a flat main package; the rest use cmd/<name>.
-        return "." if self.name == "gateway" else f"./cmd/{self.name}"
-
-    # --- Rust build ---------------------------------------------------------
-    @property
     def cargo_bin(self) -> str:
         return f"perfice-{self.name}"
-
-
-def _sentry_off() -> dict[str, str]:
-    # An empty DSN disables transport; sentry.Init still succeeds.
-    return {"SENTRY_DSN": ""}
 
 
 def service_specs() -> list[ServiceSpec]:
@@ -141,7 +99,6 @@ def service_specs() -> list[ServiceSpec]:
         "MONGO_URL": MONGO_URL,
         "KAFKA_URL": KAFKA_URL,
         "INTERNAL_SECRET": INTERNAL_SECRET,
-        **_sentry_off(),
     }
     return [
         ServiceSpec(
@@ -193,7 +150,3 @@ def service_specs() -> list[ServiceSpec]:
             ready_ports=(GATEWAY_PORT,),
         ),
     ]
-
-
-def go_bin() -> str:
-    return os.environ.get("PERFICE_E2E_GO", "go")

@@ -1,6 +1,6 @@
 """Hypothesis strategies for backend payloads.
 
-These generate values that are *valid* per the Go validator, so that any
+These generate values that are *valid* per the request validation, so that any
 failure is a real behavioural difference rather than a rejected request. Where
 a test wants invalid input it builds it explicitly.
 """
@@ -80,8 +80,7 @@ non_ascii_characters = st.sampled_from(["ﬀ", "ﬁ", "ß", "ŉ", "ǰ", "ﬅ", "
 MIN_PASSWORD_LENGTH = 8
 passwords = st.text(min_size=MIN_PASSWORD_LENGTH, max_size=128)
 
-# time.LoadLocation accepts IANA names. These all exist in the Go tzdata that
-# ships with the container images and with a normal Go toolchain.
+# IANA names, all of which exist in the tzdata the container images ship.
 valid_timezones = st.sampled_from(
     [
         "UTC",

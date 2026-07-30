@@ -19,13 +19,16 @@ Android:
 cd client && CAPACITOR=true npm run build && npx cap run android
 ```
 
-Server (from `server/`, each module independent):
+Server (one Cargo workspace at `server/rust`):
 ```bash
-cd server/<auth|sync|integration|gateway> && go build ./... && go test ./...
-# Go 1.26.5 via Homebrew; gopls symlinked from ~/go/bin into /usr/local/bin.
-# Modules have no go.work — run go commands from inside each module dir.
-docker compose -f server/docker-compose.yml up   # runs published ghcr images, not local code
-sh build-server.sh                               # builds all four service images
+cd server/rust
+cargo build --release        # all four binaries -> target/release/perfice-*
+cargo test --workspace
+cargo clippy --all-targets
+cargo fmt --all
+
+cd server && ./build.sh      # docker images for all four (REGISTRY/TAG honoured)
+docker compose -f server/docker-compose.yml up   # published ghcr images, not local code
 ```
 
 Docker image builds must run from the **repo root** (client Dockerfile needs `android/` in context): `sh build-client.sh`.

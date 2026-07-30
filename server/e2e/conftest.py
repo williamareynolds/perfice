@@ -1,6 +1,6 @@
-"""Session-wide fixtures: infrastructure, the Go stack, and per-test isolation.
+"""Session-wide fixtures: infrastructure, the service stack, and per-test isolation.
 
-Startup is expensive (docker compose + a Go build + four processes) so it
+Startup is expensive (docker compose + a cargo build + four processes) so it
 happens once per session. Isolation between tests comes from dropping the
 service databases, which is both faster and more reliable than unwinding
 individual writes.
@@ -49,17 +49,12 @@ def _infra(request):
 
 @pytest.fixture(scope="session")
 def stack(_infra, request) -> Stack:
-    """The four Go services, built from local source and running."""
+    """The four services, built from local source and running."""
     if request.config.getoption("--use-running-stack"):
         yield Stack()
         return
     stack = Stack()
     stack.start()
-    # Printed once per session so a failure report says which implementation
-    # each service was running.
-    print("\nservice implementations: " + ", ".join(
-        f"{name}={impl}" for name, impl in sorted(stack.implementations().items())
-    ))
     yield stack
     stack.stop()
 

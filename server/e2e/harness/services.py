@@ -1,4 +1,4 @@
-"""Build the Go services from local source and supervise them as host processes.
+"""Build the services from local source and supervise them as host processes.
 
 Running them as processes rather than containers keeps the feedback loop short
 and, more importantly, gives every test direct access to the service logs when
@@ -23,47 +23,22 @@ class BuildError(RuntimeError):
 
 
 def build_all() -> dict[str, Path]:
-    """Compile every service once per session, in whichever language it is
-    configured to run as."""
+    """Compile every service once per session.
+
+    One cargo invocation builds the whole workspace, so doing it per service
+    would just repeat the same work.
+    """
     config.BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    binaries: dict[str, Path] = {}
-
-    specs = config.service_specs()
-    if any(spec.implementation == "rust" for spec in specs):
-        # One cargo invocation builds the whole workspace, so doing it per
-        # service would just repeat the same work.
-        _build_rust_workspace()
-
-    for spec in specs:
-        if spec.implementation == "rust":
-            binaries[spec.name] = _rust_binary(spec)
-        else:
-            binaries[spec.name] = _build_go(spec)
-    return binaries
+    _build_workspace()
+    return {spec.name: _binary(spec) for spec in config.service_specs()}
 
 
-def _build_go(spec: config.ServiceSpec) -> Path:
-    out = config.BUILD_DIR / f"{spec.name}-go"
-    proc = subprocess.run(
-        [config.go_bin(), "build", "-o", str(out), spec.go_package],
-        cwd=str(spec.go_module_dir),
-        text=True,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        raise BuildError(
-            f"failed to build {spec.name} in {spec.go_module_dir}:\n{proc.stderr or proc.stdout}"
-        )
-    return out
-
-
-def _build_rust_workspace() -> None:
+def _build_workspace() -> None:
     """Release, always.
 
-    argon2 is configured for 64 MiB and 3 passes to match the Go
-    implementation. Unoptimized, a single password hash takes seconds instead
-    of tens of milliseconds, which makes registration-heavy tests look like a
-    hang rather than a slow run.
+    argon2 is configured for 64 MiB and 3 passes. Unoptimized, a single
+    password hash takes seconds instead of tens of milliseconds, which makes
+    registration-heavy tests look like a hang rather than a slow run.
     """
     proc = subprocess.run(
         ["cargo", "build", "--release"],
@@ -75,7 +50,7 @@ def _build_rust_workspace() -> None:
         raise BuildError(f"cargo build failed:\n{proc.stderr or proc.stdout}")
 
 
-def _rust_binary(spec: config.ServiceSpec) -> Path:
+def _binary(spec: config.ServiceSpec) -> Path:
     path = config.RUST_DIR / "target" / "release" / spec.cargo_bin
     if not path.exists():
         raise BuildError(
@@ -97,8 +72,8 @@ class ServiceProcess:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = self.log_path.open("ab")
         env = {**os.environ, **self.spec.env}
-        # godotenv/autoload reads a .env from the working directory; run from
-        # the build dir so a stray repo .env can never leak into a test run.
+        # Run from the build dir rather than the repo, so nothing in the
+        # working tree can influence a test run.
         self.proc = subprocess.Popen(
             [str(self.binary)],
             cwd=str(config.BUILD_DIR),
@@ -189,9 +164,6 @@ class Stack:
                 self.stop()
                 raise
             self.services[spec.name] = svc
-
-    def implementations(self) -> dict[str, str]:
-        return {spec.name: spec.implementation for spec in config.service_specs()}
 
     def stop(self) -> None:
         # Reverse order so the gateway stops before what it proxies to.

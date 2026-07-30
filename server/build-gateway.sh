@@ -1,1 +1,0 @@
-docker build -f gateway/Dockerfile -t ghcr.io/p0lloc/perfice_gateway:latest .
