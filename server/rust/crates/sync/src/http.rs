@@ -11,8 +11,8 @@ use perfice_common::identity::{Identity, InternalSecret};
 use std::collections::HashMap;
 
 use crate::model::{
-    AckRequest, FullPullRequest, FullPullResponse, KeyResponse, OP_CREATE, OP_DELETE,
-    OP_FULL_SYNC, OP_PUT, PullResponse, PushRequest, PushResponse, SaltResponse, SetKeyRequest,
+    AckRequest, FullPullRequest, FullPullResponse, KeyResponse, OP_CREATE, OP_DELETE, OP_FULL_SYNC,
+    OP_PUT, PullResponse, PushRequest, PushResponse, SaltResponse, SetKeyRequest,
     is_known_entity_type,
 };
 use crate::service::SyncService;
@@ -111,10 +111,7 @@ async fn push(
     Ok(Json(PushResponse { ack }))
 }
 
-async fn pull(
-    State(state): State<AppState>,
-    identity: Identity,
-) -> ApiResult<impl IntoResponse> {
+async fn pull(State(state): State<AppState>, identity: Identity) -> ApiResult<impl IntoResponse> {
     let key = state.sync.key(&identity.user_id).await?;
 
     // Updates are withheld until the user has a verification key: without one

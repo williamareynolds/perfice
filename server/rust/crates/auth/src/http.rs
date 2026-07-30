@@ -185,7 +185,10 @@ async fn login(
 /// Go answers a failed login with 401 and this exact body; the e2e suite
 /// asserts the unknown-email and wrong-password responses are byte-identical.
 fn unauthorized_credentials() -> ApiError {
-    ApiError::WithBody(StatusCode::UNAUTHORIZED, "Invalid username or password".into())
+    ApiError::WithBody(
+        StatusCode::UNAUTHORIZED,
+        "Invalid username or password".into(),
+    )
 }
 
 async fn refresh(

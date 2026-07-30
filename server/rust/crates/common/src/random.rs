@@ -30,9 +30,25 @@ pub fn alphanumeric(len: usize) -> String {
         .collect()
 }
 
+/// Returns a value in `0..bound`, or zero when the bound is zero.
+pub fn below(bound: u64) -> u64 {
+    if bound == 0 {
+        return 0;
+    }
+
+    rand::rng().random_range(0..bound)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn below_stays_inside_the_bound() {
+        assert_eq!(below(0), 0);
+        assert_eq!(below(1), 0);
+        assert!((0..10).all(|_| below(10) < 10));
+    }
 
     #[test]
     fn bytes_have_the_requested_length() {

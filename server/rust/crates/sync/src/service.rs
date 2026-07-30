@@ -186,7 +186,11 @@ impl SyncService {
     }
 
     /// Updates still awaiting delivery to this session.
-    pub async fn pending(&self, user_id: &str, session_id: &str) -> anyhow::Result<Vec<SyncUpdate>> {
+    pub async fn pending(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<SyncUpdate>> {
         let cursor = self
             .updates
             .find(doc! { "user": user_id, "clients": session_id })
@@ -224,8 +228,8 @@ impl SyncService {
         session_id: &str,
         entity_types: Option<Vec<String>>,
     ) -> anyhow::Result<HashMap<String, Vec<StoredEntity>>> {
-        let types: Vec<String> = entity_types
-            .unwrap_or_else(|| ENTITY_TYPES.iter().map(|t| (*t).to_owned()).collect());
+        let types: Vec<String> =
+            entity_types.unwrap_or_else(|| ENTITY_TYPES.iter().map(|t| (*t).to_owned()).collect());
 
         let mut result = HashMap::with_capacity(types.len());
         for entity_type in &types {

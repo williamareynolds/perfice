@@ -84,7 +84,10 @@ mod tests {
 
     #[test]
     fn accepts_a_well_formed_header() {
-        assert_eq!(bearer_token(Some("Bearer abc.def.ghi")), Some("abc.def.ghi"));
+        assert_eq!(
+            bearer_token(Some("Bearer abc.def.ghi")),
+            Some("abc.def.ghi")
+        );
     }
 
     #[test]

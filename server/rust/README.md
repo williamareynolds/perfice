@@ -1,17 +1,20 @@
 # Perfice backend — Rust
 
-An in-progress port of the Go backend to Rust + axum. The e2e suite in
-`server/e2e` is the specification: it is implementation-agnostic, so a ported
-service is only considered done when the suite passes against it.
+A port of the Go backend to Rust + axum. The e2e suite in `server/e2e` is the
+specification: it is implementation-agnostic, so a ported service is only
+considered done when the suite passes against it.
 
 ## Status
+
+All four services are ported. **247/247 e2e tests pass with everything on
+Rust**, in 3m34s against Go's 6m10s.
 
 | Service | State |
 | --- | --- |
 | `auth` | **Ported.** Passes the full suite. |
 | `gateway` | **Ported.** Passes the full suite. |
 | `sync` | **Ported.** Passes the full suite, including the stateful model. |
-| `integration` | Not started. See the warning below before porting it. |
+| `integration` | **Ported.** Passes the full suite, including the provider suite. |
 
 Not yet ported within auth: the mail-dependent flows (email confirmation,
 password reset). No mail service is configured in any environment, so those
@@ -19,34 +22,41 @@ routes are inert in Go too; `http::mail_disabled` answers them with the same
 400 Go produces rather than a 404. Porting them means adding the
 `accountTokens` collection and a Maileroo client.
 
-### Before porting `integration`
+### Notes on `integration`
 
-The gap that made this service unsafe to port has been closed.
-`tests/test_integration_provider.py` covers OAuth (including PKCE), token
-refresh, scheduled pulls, historical backfill, fetched-entity logs and at-rest
-encryption, driven against a fake provider in `harness/fake_provider.py`. 35
-tests, all passing against Go, so they are a real baseline rather than a guess
-at intended behaviour.
+This was the last and largest service, and the one with the most behaviour that
+a port can satisfy the tests on while being wrong in production. Worth knowing:
 
-Three of those areas are worth reading before writing the Rust, because they
-are the ones a port passes by accident and fails in production:
+- **A refreshed OAuth token is written back** (`auth.rs`). Credentials are
+  re-read from Mongo on every fetch, so failing to store a renewal would mean a
+  hidden token grant per fetch rather than a visible error. The suite detects it
+  as "the refreshes never stop". A refresh token the provider has revoked can
+  never recover, so after `MAX_REFRESH_FAILURES` consecutive failures the
+  credentials are deleted and the user shows as unauthenticated.
+- **PKCE** keeps the verifier server-side against the `state` until the exchange
+  (`oauth.rs`). Generating a fresh verifier at exchange time would satisfy every
+  other assertion in the suite.
+- **Fetched-entity logs** (`process.rs`) are active only when an entity sets
+  both `multiple` and `logSettings`. They let a record the provider *stops*
+  returning be told apart from one it never returned; the vanished record's
+  update is blanked to `data: null` rather than deleted, so the client can
+  retract what it already imported.
+- **The scheduler** (`scheduler.rs`) is one tokio task per integration, sleeping
+  until its cron's next occurrence *in the user's timezone*. That is why a
+  `timezoneChange` event reschedules rather than being ignored: a daily job
+  otherwise keeps firing against the day the user used to be in.
+- **Encryption** (`crypto.rs`) uses the same primitive as Go
+  (XChaCha20-Poly1305 under `ENCRYPTION_KEY`) but its own encoding. Nothing
+  reads both — only one implementation of a service runs at a time, and there is
+  no existing database.
 
-- **Token refresh.** A refreshed token must be *written back*
-  (`service/auth.go:handleTokenRefresh`). The suite detects a missing write-back
-  as "the refreshes never stop", since credentials are re-read from Mongo on
-  every fetch. Note also the eviction rule: after
-  `maxTokenRefreshTries` consecutive failures the credentials are deleted, which
-  is what returns the user to an unauthenticated state.
-- **PKCE.** The verifier presented at the token endpoint must be the preimage of
-  the challenge sent at authorization time, per `state`. Generating a fresh
-  verifier for the exchange satisfies every other assertion.
-- **Fetched-entity logs.** Only active when an entity sets both `multiple` and
-  `logSettings`. They exist so an item the provider *stops* returning can be
-  told apart from one it never returned; the vanished item's update is blanked
-  (`data: null`), not deleted, so the client can retract it.
+Two Go behaviours were kept deliberately rather than "fixed":
 
-Crates worth reaching for: `oauth2`, `tokio-cron-scheduler`, `serde_json_path`,
-`chacha20poly1305`.
+- The `len` aggregator is defined in Go but never registered, so a definition
+  using it yields nothing. Registering it would change what existing
+  definitions mean.
+- A five-field cron *is* now accepted (normalised to six). Go's scheduler
+  rejects it, which leaves the integration silently never running.
 
 ## Running the suite against Rust
 
@@ -74,7 +84,24 @@ crates/
   auth/         accounts, sessions, JWT, gRPC + HTTP
   gateway/      routing, CORS, bearer auth, request forwarding
   sync/         replication, key verification, salts
-  integration/  (placeholder)
+  integration/  providers, OAuth, scheduled pulls, webhooks, updates
+```
+
+Inside `integration/`, which is the one crate large enough to need a map:
+
+```
+defs.rs       the provider-definition cache, read once at boot
+store.rs      all Mongo access; encrypts on write, decrypts on read
+crypto.rs     XChaCha20-Poly1305 for tokens and fetched payloads
+oauth.rs      authorization URLs, code exchange, refresh, PKCE
+auth.rs       credentials: storage, renewal, and giving up on them
+paths.rs      [VARIABLE] substitution, JSONPath, aggregators
+process.rs    response -> records, including fetched-entity logs
+fetch.rs      talking to providers: timezone, URL, credential
+scheduler.rs  one task per integration, cron in the user's timezone
+service.rs    integration lifecycle and the cascades on deletion
+http.rs       routes
+kafka.rs      userDeleted and timezoneChange
 ```
 
 ## What compatibility actually means here

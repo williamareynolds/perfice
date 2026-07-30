@@ -131,10 +131,7 @@ impl AuthService {
             return Ok(HashMap::new());
         }
 
-        let cursor = self
-            .users
-            .find(doc! { "_id": { "$in": user_ids } })
-            .await?;
+        let cursor = self.users.find(doc! { "_id": { "$in": user_ids } }).await?;
         let users: Vec<User> = cursor.try_collect().await?;
 
         Ok(users

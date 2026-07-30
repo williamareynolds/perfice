@@ -71,7 +71,8 @@ impl SessionService {
             .map_err(|_| SessionError::InvalidSession)?;
 
         let claims = data.claims;
-        self.require_live_session(&claims.sub, &claims.session).await?;
+        self.require_live_session(&claims.sub, &claims.session)
+            .await?;
         Ok((claims.sub, claims.session))
     }
 
@@ -92,7 +93,10 @@ impl SessionService {
     pub async fn sessions_for_user(&self, user_id: &str) -> anyhow::Result<Vec<Session>> {
         use futures::TryStreamExt;
         let cursor = self.sessions.find(doc! { "user": user_id }).await?;
-        cursor.try_collect().await.context("failed to read sessions")
+        cursor
+            .try_collect()
+            .await
+            .context("failed to read sessions")
     }
 
     pub async fn create(&self, user_id: &str) -> anyhow::Result<Session> {

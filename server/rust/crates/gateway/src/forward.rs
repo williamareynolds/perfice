@@ -17,9 +17,7 @@ use axum::extract::OriginalUri;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use perfice_common::error::ApiError;
-use perfice_common::identity::{
-    INTERNAL_SECRET_HEADER, SESSION_ID_HEADER, USER_ID_HEADER,
-};
+use perfice_common::identity::{INTERNAL_SECRET_HEADER, SESSION_ID_HEADER, USER_ID_HEADER};
 
 use crate::AppState;
 use crate::auth::Identity;
@@ -88,10 +86,7 @@ pub async fn forward(
     let mut outgoing = HeaderMap::new();
     for name in upstream.forwarded_headers() {
         if let Some(value) = headers.get(*name) {
-            outgoing.insert(
-                HeaderName::from_static(name),
-                value.clone(),
-            );
+            outgoing.insert(HeaderName::from_static(name), value.clone());
         }
     }
 
@@ -140,10 +135,9 @@ async fn relay(response: reqwest::Response) -> Result<Response, ApiError> {
         headers.insert(name.clone(), value.clone());
     }
 
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| ApiError::Internal(anyhow::anyhow!("failed to read upstream body: {err}")))?;
+    let body = response.bytes().await.map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to read upstream body: {err}"))
+    })?;
 
     Ok((status, headers, body).into_response())
 }

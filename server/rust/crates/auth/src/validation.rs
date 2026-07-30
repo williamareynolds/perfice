@@ -106,7 +106,10 @@ mod tests {
 
     #[test]
     fn ascii_case_is_folded_and_whitespace_trimmed() {
-        assert_eq!(sanitize_email("  MiXeD@Example.TEST  "), "mixed@example.test");
+        assert_eq!(
+            sanitize_email("  MiXeD@Example.TEST  "),
+            "mixed@example.test"
+        );
     }
 
     #[test]
@@ -147,7 +150,11 @@ mod tests {
 
     #[test]
     fn accepts_ordinary_addresses() {
-        for address in ["user@example.test", "a.b+c@sub.example.co.uk", "ﬀ@example.test"] {
+        for address in [
+            "user@example.test",
+            "a.b+c@sub.example.co.uk",
+            "ﬀ@example.test",
+        ] {
             assert!(
                 validate_credentials(address, "longenoughpassword").is_ok(),
                 "{address:?} should have been accepted"
@@ -166,7 +173,13 @@ mod tests {
 
     #[test]
     fn rejects_non_canonical_timezones() {
-        for zone in ["", "   ", "Europe//Amsterdam", "/Europe/Amsterdam", "Europe/Amsterdam/"] {
+        for zone in [
+            "",
+            "   ",
+            "Europe//Amsterdam",
+            "/Europe/Amsterdam",
+            "Europe/Amsterdam/",
+        ] {
             assert!(!is_canonical_timezone(zone), "{zone:?} should be rejected");
         }
     }

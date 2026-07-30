@@ -9,9 +9,9 @@
 //! migration; worth revisiting once every service is Rust.
 
 use anyhow::Context;
+use rdkafka::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
-use rdkafka::ClientConfig;
 
 use crate::service::SyncService;
 
@@ -39,7 +39,10 @@ pub async fn consume(brokers: &str, group_id: &str, sync: SyncService) -> anyhow
     loop {
         match consumer.recv().await {
             Ok(message) => {
-                let key = message.key().map(String::from_utf8_lossy).unwrap_or_default();
+                let key = message
+                    .key()
+                    .map(String::from_utf8_lossy)
+                    .unwrap_or_default();
                 let payload = message
                     .payload()
                     .map(String::from_utf8_lossy)
