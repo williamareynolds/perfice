@@ -23,23 +23,66 @@ class BuildError(RuntimeError):
 
 
 def build_all() -> dict[str, Path]:
-    """Compile every service once per session."""
+    """Compile every service once per session, in whichever language it is
+    configured to run as."""
     config.BUILD_DIR.mkdir(parents=True, exist_ok=True)
     binaries: dict[str, Path] = {}
-    for spec in config.service_specs():
-        out = config.BUILD_DIR / spec.name
-        proc = subprocess.run(
-            [config.go_bin(), "build", "-o", str(out), spec.package],
-            cwd=str(spec.module_dir),
-            text=True,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            raise BuildError(
-                f"failed to build {spec.name} in {spec.module_dir}:\n{proc.stderr or proc.stdout}"
-            )
-        binaries[spec.name] = out
+
+    specs = config.service_specs()
+    if any(spec.implementation == "rust" for spec in specs):
+        # One cargo invocation builds the whole workspace, so doing it per
+        # service would just repeat the same work.
+        _build_rust_workspace()
+
+    for spec in specs:
+        if spec.implementation == "rust":
+            binaries[spec.name] = _rust_binary(spec)
+        else:
+            binaries[spec.name] = _build_go(spec)
     return binaries
+
+
+def _build_go(spec: config.ServiceSpec) -> Path:
+    out = config.BUILD_DIR / f"{spec.name}-go"
+    proc = subprocess.run(
+        [config.go_bin(), "build", "-o", str(out), spec.go_package],
+        cwd=str(spec.go_module_dir),
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise BuildError(
+            f"failed to build {spec.name} in {spec.go_module_dir}:\n{proc.stderr or proc.stdout}"
+        )
+    return out
+
+
+def _build_rust_workspace() -> None:
+    """Release, always.
+
+    argon2 is configured for 64 MiB and 3 passes to match the Go
+    implementation. Unoptimized, a single password hash takes seconds instead
+    of tens of milliseconds, which makes registration-heavy tests look like a
+    hang rather than a slow run.
+    """
+    proc = subprocess.run(
+        ["cargo", "build", "--release"],
+        cwd=str(config.RUST_DIR),
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise BuildError(f"cargo build failed:\n{proc.stderr or proc.stdout}")
+
+
+def _rust_binary(spec: config.ServiceSpec) -> Path:
+    path = config.RUST_DIR / "target" / "release" / spec.cargo_bin
+    if not path.exists():
+        raise BuildError(
+            f"{spec.cargo_bin} was not produced by cargo build; "
+            f"is crates/{spec.name} part of the workspace?"
+        )
+    return path
 
 
 class ServiceProcess:
@@ -136,6 +179,9 @@ class Stack:
             svc = ServiceProcess(spec, binaries[spec.name], config.LOG_DIR / f"{spec.name}.log")
             svc.start()
             self.services[spec.name] = svc
+
+    def implementations(self) -> dict[str, str]:
+        return {spec.name: spec.implementation for spec in config.service_specs()}
 
     def stop(self) -> None:
         # Reverse order so the gateway stops before what it proxies to.

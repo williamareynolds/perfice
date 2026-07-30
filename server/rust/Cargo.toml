@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# The e2e suite builds in release: argon2 is configured for 64 MiB / 3 passes,
+# which is punishingly slow in an unoptimized build (a single login takes
+# seconds rather than tens of milliseconds) and makes the suite appear to hang.
+[profile.release]
+debug = 1

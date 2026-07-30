@@ -55,6 +55,11 @@ def stack(_infra, request) -> Stack:
         return
     stack = Stack()
     stack.start()
+    # Printed once per session so a failure report says which implementation
+    # each service was running.
+    print("\nservice implementations: " + ", ".join(
+        f"{name}={impl}" for name, impl in sorted(stack.implementations().items())
+    ))
     yield stack
     stack.stop()
 

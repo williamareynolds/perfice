@@ -77,16 +77,56 @@ SYNC_ENTITY_TYPES = [
 SYNC_OPERATIONS = ["create", "put", "delete", "fullSync"]
 
 
+RUST_DIR = SERVER_DIR / "rust"
+
+# Which implementation to run for each service. Set per service with
+# PERFICE_E2E_IMPL_<NAME> (go|rust), or for all of them at once with
+# PERFICE_E2E_IMPL. Defaults to go.
+#
+# Mixing is supported and is the point: the two implementations share the same
+# database, the same Kafka topic and the same .proto, so a single service can be
+# swapped and validated against the suite while the rest stay on Go.
+IMPLEMENTATIONS = ("go", "rust")
+
+
+def implementation_for(service: str) -> str:
+    chosen = os.environ.get(
+        f"PERFICE_E2E_IMPL_{service.upper()}",
+        os.environ.get("PERFICE_E2E_IMPL", "go"),
+    ).lower()
+    if chosen not in IMPLEMENTATIONS:
+        raise ValueError(
+            f"unknown implementation {chosen!r} for {service}; expected one of {IMPLEMENTATIONS}"
+        )
+    return chosen
+
+
 @dataclass(frozen=True)
 class ServiceSpec:
     name: str
-    # Package path to build, relative to the module directory.
-    module_dir: Path
-    package: str
     env: dict[str, str] = field(default_factory=dict)
     # (host, port) pairs that must accept a TCP connection before the service
     # is considered ready.
     ready_ports: tuple[int, ...] = ()
+
+    @property
+    def implementation(self) -> str:
+        return implementation_for(self.name)
+
+    # --- Go build -----------------------------------------------------------
+    @property
+    def go_module_dir(self) -> Path:
+        return SERVER_DIR / self.name
+
+    @property
+    def go_package(self) -> str:
+        # The gateway is a flat main package; the rest use cmd/<name>.
+        return "." if self.name == "gateway" else f"./cmd/{self.name}"
+
+    # --- Rust build ---------------------------------------------------------
+    @property
+    def cargo_bin(self) -> str:
+        return f"perfice-{self.name}"
 
 
 def _sentry_off() -> dict[str, str]:
@@ -106,8 +146,6 @@ def service_specs() -> list[ServiceSpec]:
     return [
         ServiceSpec(
             name="auth",
-            module_dir=SERVER_DIR / "auth",
-            package="./cmd/auth",
             env={
                 **common,
                 "GRPC_PORT": str(AUTH_GRPC_PORT),
@@ -123,8 +161,6 @@ def service_specs() -> list[ServiceSpec]:
         ),
         ServiceSpec(
             name="sync",
-            module_dir=SERVER_DIR / "sync",
-            package="./cmd/sync",
             env={
                 **common,
                 "PORT": str(SYNC_PORT),
@@ -134,8 +170,6 @@ def service_specs() -> list[ServiceSpec]:
         ),
         ServiceSpec(
             name="integration",
-            module_dir=SERVER_DIR / "integration",
-            package="./cmd/integration",
             env={
                 **common,
                 "PORT": str(INTEGRATION_PORT),
@@ -147,8 +181,6 @@ def service_specs() -> list[ServiceSpec]:
         ),
         ServiceSpec(
             name="gateway",
-            module_dir=SERVER_DIR / "gateway",
-            package=".",
             env={
                 **common,
                 "PORT": str(GATEWAY_PORT),

@@ -1,0 +1,26 @@
+[package]
+name = "perfice-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+argon2 = { version = "0.5.3", features = ["std"] }
+axum = "0.8.9"
+base64 = "0.23.0"
+futures = "0.3.33"
+mongodb = "3.8.0"
+perfice-proto = { version = "0.1.0", path = "../proto" }
+rand = "0.10.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["full"] }
+tonic = "0.14.6"
+tower-http = { version = "0.7.0", features = ["cors", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lints]
+workspace = true
