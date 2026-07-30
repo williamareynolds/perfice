@@ -16,7 +16,8 @@ Libraries are wired by `replace perfice.adoe.dev/util => ../util` directives, so
 
 ## Cross-cutting patterns
 
-- **Trust boundary**: only the gateway authenticates. Backends read identity from `X-Userid` / `X-Sessionid` headers without verification. Publishing any backend port directly is a full account-impersonation hole. Details in `mem:server/gateway`.
+- **Trust boundary**: only the gateway authenticates. Backends read identity from `X-Userid` / `X-Sessionid` headers without verification, but now also require a shared `X-Internal-Secret` proving the request came through the gateway. `INTERNAL_SECRET` must be identical across all four services and **every service panics at boot without it**. Backend ports must still stay private. Details in `mem:server/gateway`.
+- **Errors**: all four services use `util.NewErrorHandler`, which honours `*fiber.Error` statuses and maps validator failures to 400. See `mem:server/hardening_2026_07` for the full set of behaviour fixes applied ahead of the Rust rewrite.
 - **Shape**: `cmd/<name>/<name>.go` is a 5-line main calling `NewXApp()` + `Init()`; everything real is in `internal/`. `auth` and `sync` keep `internal/` flat as `package internal`; `integration` subdivides into `collection/controller/service/model`.
 - **HTTP**: Fiber v2 everywhere, with `recover` middleware and an `ErrorHandler` that logs, reports to Sentry, and returns bare 500.
 - **Config**: env vars only, no config files. `_ "github.com/joho/godotenv/autoload"` in every app means a `.env` in the working directory is loaded implicitly. Missing vars are generally not validated — services boot and fail later.

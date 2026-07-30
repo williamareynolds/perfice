@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pb "perfice.adoe.dev/proto"
+	"perfice.adoe.dev/util"
 )
 
 type SyncApp struct {
@@ -119,17 +120,18 @@ func (a *SyncApp) setupServices() {
 func (a *SyncApp) setupHttpServer() {
 	app := fiber.New(
 		fiber.Config{
-			ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+			ErrorHandler: util.NewErrorHandler(func(err error) {
 				log.Println("Error occurred: ", err)
 				sentry.CaptureException(err)
-				return ctx.SendStatus(fiber.StatusInternalServerError)
-			},
+			}),
 		})
 
 	app.Use(recover.New(
 		recover.Config{
 			EnableStackTrace: true,
 		}))
+
+	app.Use(util.InternalSecretMiddleware(util.RequireInternalSecret()))
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "https://localhost, http://localhost:8000, http://localhost:5173, https://perfice.adoe.dev",

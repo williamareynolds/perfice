@@ -76,6 +76,14 @@ func (c *UserIntegrationController) Create(ctx *fiber.Ctx) error {
 		return err
 	}
 
+	// Create returns (nil, nil) when no entity definition matches the requested
+	// integration/entity type pair. Dereferencing that without checking panicked
+	// on a trivially reachable input; the recover middleware turned it into a
+	// 500 when the caller simply asked for a provider that does not exist.
+	if integration == nil {
+		return ctx.Status(fiber.StatusBadRequest).SendString("Unknown integration or entity type")
+	}
+
 	return ctx.JSON(*integration)
 }
 

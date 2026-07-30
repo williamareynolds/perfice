@@ -6,7 +6,11 @@ import (
 )
 
 type KeyRequest struct {
-	Key []byte `json:"key" validate:"required"`
+	// min=1 rather than just `required`: for a slice, Go's validator implements
+	// `required` as "not nil", so an empty key passed straight through. That
+	// mattered because Pull gates on the stored key being nil, making an empty
+	// key a distinct state that silently unblocked replication.
+	Key []byte `json:"key" validate:"required,min=1"`
 }
 
 type KeyResponse struct {

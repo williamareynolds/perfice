@@ -68,8 +68,11 @@ type IncomingSyncUpdateDTO struct {
 }
 
 type IncomingUpdateEntity struct {
-	ID      string `json:"id"`
-	Version int    `json:"version" validate:"required"`
+	ID string `json:"id"`
+	// No `required` tag: Go's validator treats the zero value as missing, which
+	// made version 0 impossible to send even though it is a perfectly valid
+	// counter value.
+	Version int    `json:"version"`
 	Data    []byte `json:"data"`
 }
 
@@ -138,6 +141,19 @@ func (c *SyncController) Push(ctx *fiber.Ctx) error {
 			return ctx.Status(fiber.StatusBadRequest).SendString("Invalid entity type")
 		}
 
+		// Only a delete may omit the payload. This used to be detected deep
+		// inside the write transaction, which aborted that one update and
+		// silently dropped it from the ack list while still returning 200 --
+		// indistinguishable, to the client, from a successful push.
+		if update.Operation != deleteOperation {
+			for _, entity := range update.Entities {
+				if entity.Data == nil {
+					return ctx.Status(fiber.StatusBadRequest).
+						SendString("Entity data is required for " + update.Operation)
+				}
+			}
+		}
+
 		entities, err := util.SliceMapErr[IncomingUpdateEntity, UpdateEntity](update.Entities, deserializeUpdateEntity)
 		if err != nil {
 			return err
@@ -200,8 +216,9 @@ func (c *SyncController) Ack(ctx *fiber.Ctx) error {
 		return err
 	}
 
+	userId := getUserId(ctx)
 	sessionId := getSessionId(ctx)
-	err := c.syncService.Ack(sessionId, req.Updates)
+	err := c.syncService.Ack(userId, sessionId, req.Updates)
 	if err != nil {
 		return err
 	}
@@ -217,6 +234,14 @@ func (c *SyncController) FullPull(ctx *fiber.Ctx) error {
 
 	userId := getUserId(ctx)
 	sessionId := getSessionId(ctx)
+
+	// Validate up front so an unknown type is a 400 rather than surfacing from
+	// the service layer as an untyped error and becoming a 500.
+	for _, entityType := range req.EntityTypes {
+		if !slices.Contains(c.entityTypes, entityType) {
+			return ctx.Status(fiber.StatusBadRequest).SendString("Invalid entity type")
+		}
+	}
 
 	entities, err := c.syncService.FullPull(userId, sessionId, req.EntityTypes)
 	if err != nil {

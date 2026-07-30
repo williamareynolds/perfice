@@ -1,9 +1,10 @@
 """Sync service behaviour.
 
 The sync service is the hardest part of the backend to reimplement correctly,
-because almost none of its rules are stated anywhere. The most important one is
-the first test in this file: pushes from a user with a single session are
-silently discarded.
+because almost none of its rules are stated anywhere. Two to hold on to:
+entities are persisted on every push regardless of how many sessions the user
+has, but the replication record that drives /pull is only created when there is
+another session to replay it to.
 """
 
 from __future__ import annotations
@@ -17,27 +18,30 @@ from harness.client import b64d, b64e
 from harness.factories import delete_entity, entity, new_user_with_devices, update
 
 
-class TestPushRequiresASecondSession:
-    @pytest.mark.characterization
-    def test_push_from_a_lone_session_persists_nothing(self, device, mongo):
-        """`SyncService.Push` returns early when the user has no *other*
-        sessions, before it writes anything at all.
+class TestPushPersistsRegardlessOfSessionCount:
+    """`Push` used to return early when the user had no *other* sessions,
+    before writing anything: a single-device user's data was never stored and
+    /fullPull returned nothing for them. Entities are now always persisted;
+    only the replication record stays conditional, since with nobody to replay
+    to it would just accumulate rows that are never acked."""
 
-        So a single-device user pushing data gets `{"ack": null}` and the
-        entities are never stored. Their data only starts being persisted
-        server-side once they log in somewhere else. The client treats a
-        missing ack as "not yet synced" and keeps the update queued, so nothing
-        is lost -- but the server-side effect is genuinely nothing.
+    def test_a_lone_session_persists_its_entities(self, device, mongo):
+        ent = entity()
+        acked = device.push([update(entities=[ent])])
 
-        This is the single behaviour most likely to be "fixed" by accident in
-        a rewrite. It changes what /fullPull returns for single-device users.
-        """
-        resp = device.api.push(device.token, [update()])
-        assert resp.status_code == 200
-        assert resp.json()["ack"] is None
+        assert len(acked) == 1
+        stored = mongo["sync"]["trackables"].find_one({"id": ent["id"]})
+        assert stored is not None and stored["user"] == device.user_id
 
-        for entity_type in config.SYNC_ENTITY_TYPES:
-            assert mongo["sync"][entity_type].count_documents({}) == 0
+    def test_a_lone_session_can_read_its_data_back(self, device):
+        ent = entity(data=b"single-device payload")
+        device.push([update(entities=[ent])])
+
+        entities = device.full_pull(["trackables"])["trackables"]
+        assert [e["id"] for e in entities] == [ent["id"]]
+
+    def test_a_lone_session_creates_no_replication_record(self, device, mongo):
+        device.push([update()])
         assert mongo["sync"]["sync_updates"].count_documents({}) == 0
 
     def test_push_persists_once_a_second_session_exists(self, devices, mongo):
@@ -46,13 +50,32 @@ class TestPushRequiresASecondSession:
         assert len(acked) == 1
         assert mongo["sync"]["trackables"].count_documents({"user": first.user_id}) == 1
 
-    def test_logging_out_the_other_session_reverts_to_the_no_op_behaviour(self, devices, mongo):
+    def test_a_second_session_does_create_a_replication_record(self, devices, mongo):
+        first, _ = devices
+        first.push([update()])
+        assert mongo["sync"]["sync_updates"].count_documents({}) == 1
+
+    def test_logging_out_the_other_session_still_persists(self, devices, mongo):
         first, second = devices
         first.api.logout(second.token).raise_for_status()
 
-        resp = first.api.push(first.token, [update()])
-        assert resp.json()["ack"] is None
-        assert mongo["sync"]["trackables"].count_documents({}) == 0
+        acked = first.push([update()])
+        assert len(acked) == 1
+        assert mongo["sync"]["trackables"].count_documents({}) == 1
+
+    def test_data_pushed_alone_is_delivered_after_a_second_device_appears(self, api):
+        """The point of persisting unconditionally: a user who starts on one
+        device must not lose what they logged before adding a second."""
+        from harness.factories import login_device, register_user
+
+        email, password = register_user(api)
+        first = login_device(api, email, password)
+        ent = entity(data=b"logged before the second device existed")
+        first.push([update(entities=[ent])])
+
+        second = login_device(api, email, password)
+        entities = second.full_pull(["trackables"])["trackables"]
+        assert [e["id"] for e in entities] == [ent["id"]]
 
 
 class TestPushPersistence:
@@ -134,20 +157,24 @@ class TestPushPersistence:
         stored = mongo["sync"]["trackables"].find_one({"id": entity_id})
         assert bytes(stored["data"]) == b"newer"
 
-    @pytest.mark.characterization
-    def test_a_non_delete_entity_with_null_data_is_skipped_not_rejected(self, devices, mongo):
-        """`processUpdate` errors on nil data for create/put, the transaction
-        is abandoned, and the loop `continue`s. The request still returns 200 --
-        the update is simply missing from the ack list."""
+    def test_a_non_delete_entity_with_null_data_is_rejected(self, devices, mongo):
+        """This used to be detected inside the write transaction, which dropped
+        that one update from the ack list while still returning 200 -- from the
+        client's side, indistinguishable from success."""
         first, _ = devices
         bad = update(entities=[{"id": str(uuid.uuid4()), "version": 1, "data": None}])
+
+        resp = first.api.push(first.token, [bad])
+        assert resp.status_code == 400
+        assert mongo["sync"]["trackables"].count_documents({}) == 0
+
+    def test_a_rejected_batch_is_not_partially_applied(self, devices, mongo):
+        first, _ = devices
         good = update()
+        bad = update(entities=[{"id": str(uuid.uuid4()), "version": 1, "data": None}])
 
-        acked = first.push([bad, good])
-
-        assert good["id"] in acked
-        assert bad["id"] not in acked
-        assert mongo["sync"]["trackables"].count_documents({}) == 1
+        assert first.api.push(first.token, [good, bad]).status_code == 400
+        assert mongo["sync"]["trackables"].count_documents({}) == 0
 
 
 class TestPushValidation:
@@ -165,7 +192,6 @@ class TestPushValidation:
             assert len(acked) == 1, f"{entity_type} was not accepted"
             assert mongo["sync"][entity_type].count_documents({}) == 1
 
-    @pytest.mark.characterization
     @pytest.mark.parametrize(
         "broken,reason",
         [
@@ -175,27 +201,23 @@ class TestPushValidation:
             ({"entityType": ""}, "entityType is `required`"),
         ],
     )
-    def test_validation_failures_surface_as_500(self, devices, broken, reason):
-        """`ParseAndValidate` returns the validator error unchanged, and sync's
-        Fiber ErrorHandler turns every unhandled error into a bare 500 with an
-        empty body.
-
-        A client therefore cannot tell a malformed request from a server fault.
-        Worth fixing in the port -- but it is the current contract, so it is
-        pinned here rather than assumed.
-        """
+    def test_validation_failures_are_400(self, devices, broken, reason):
+        """These used to be 500s: ParseAndValidate returned the validator error
+        unchanged and the ErrorHandler flattened everything to 500, so a client
+        could not tell a malformed request from a server fault."""
         first, _ = devices
         payload = {**update(), **broken}
         resp = first.api.push(first.token, [payload])
-        assert resp.status_code == 500, reason
+        assert resp.status_code == 400, reason
 
-    @pytest.mark.characterization
-    def test_entity_version_zero_is_rejected(self, devices):
-        """`Version int` is tagged `required`, and Go's validator treats the
-        zero value as missing. Version 0 is therefore unusable."""
+    def test_entity_version_zero_is_accepted(self, devices, mongo):
+        """`Version` no longer carries a `required` tag. Go's validator treats
+        the zero value as missing, which made 0 -- a perfectly ordinary counter
+        value -- impossible to send."""
         first, _ = devices
-        resp = first.api.push(first.token, [update(entities=[entity(version=0)])])
-        assert resp.status_code == 500
+        ent = entity(version=0)
+        assert len(first.push([update(entities=[ent])])) == 1
+        assert mongo["sync"]["trackables"].find_one({"id": ent["id"]})["version"] == 0
 
     def test_negative_versions_are_accepted(self, devices, mongo):
         first, _ = devices
@@ -303,15 +325,10 @@ class TestAck:
         second.ack([pushed["id"]])
         assert second.pull_updates() == []
 
-    @pytest.mark.characterization
-    def test_ack_does_not_verify_ownership_of_the_update(self, api, mongo):
-        """`PullSessionFromUpdatesWithIds` filters only on update id, with no
-        user or ownership check. It pulls the *caller's own* session id from
-        whatever update matches, so the blast radius is limited to updates the
-        caller was already a recipient of -- but a port that adds a user filter
-        is changing behaviour, and one that trusts the id blindly for anything
-        else would open a real hole.
-        """
+    def test_ack_is_scoped_to_the_calling_user(self, api, mongo):
+        """`PullSessionFromUpdatesWithIds` used to filter on update id alone,
+        relying entirely on session ids being unguessable. It now also filters
+        on the authenticated user, making the isolation structural."""
         alice_first, alice_second = new_user_with_devices(api, 2)
         alice_first.set_key(b"k")
         bob_first, bob_second = new_user_with_devices(api, 2)
@@ -367,10 +384,10 @@ class TestFullPull:
         second.full_pull(["trackables"])
         assert len(second.pull_updates()) == 1
 
-    def test_unknown_entity_type_is_500(self, synced_devices):
+    def test_unknown_entity_type_is_400(self, synced_devices):
         _, second = synced_devices
         resp = second.api.full_pull(second.token, ["nonexistent"])
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     def test_full_pull_only_returns_the_callers_data(self, api):
         alice_first, alice_second = new_user_with_devices(api, 2)
@@ -444,33 +461,13 @@ class TestKeyVerification:
         alice.set_key(b"alice-key")
         assert bob.get_key() is None
 
-    @pytest.mark.characterization
-    def test_an_empty_key_is_accepted_despite_being_required(self, device):
-        """`Key []byte` is tagged `validate:"required"`, which looks like it
-        should reject an empty key -- but Go's validator implements `required`
-        for slices as "not the zero value", and the zero value of a slice is
-        *nil*, not empty. JSON `""` unmarshals to a non-nil empty slice, so it
-        sails through.
-
-        This is not academic: the stored key is what `Pull` checks for nil to
-        decide whether to release updates at all, so an empty key is a real,
-        reachable state that behaves differently from no key.
-        """
-        assert device.api.set_key(device.token, b"").status_code == 200
-        assert device.get_key() == b""
-
-    @pytest.mark.characterization
-    def test_an_empty_key_still_unblocks_pulling(self, devices):
-        """Follows from the above: `Pull` gates on `key == nil`, and an empty
-        key is not nil, so setting one is enough to start receiving updates."""
-        first, second = devices
-        first.set_key(b"")
-        pushed = update()
-        first.push([pushed])
-
-        body = second.pull()
-        assert body["key"] == ""
-        assert [u["id"] for u in body["updates"]] == [pushed["id"]]
+    def test_an_empty_key_is_rejected(self, device):
+        """The tag is now `required,min=1`. Plain `required` on a slice means
+        "not nil" in Go's validator, so an empty key passed straight through --
+        and because Pull gates on the stored key being nil, an empty key was a
+        distinct state that silently unblocked replication."""
+        assert device.api.set_key(device.token, b"").status_code == 400
+        assert device.get_key() is None
 
 
 class TestSalt:

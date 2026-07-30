@@ -185,41 +185,42 @@ class TestEmailSanitisation:
         assert api.login(canonical, DEFAULT_PASSWORD).status_code == 200
         assert api.login(decorated, DEFAULT_PASSWORD).status_code == 200
 
-    @pytest.mark.characterization
     @prop_settings
-    @given(char=gen.non_round_tripping_characters)
-    def test_unicode_case_mapping_is_not_a_round_trip(self, api, char):
-        """`sanitizeEmail` is `strings.ToLower(strings.Trim(email, " "))`, a
-        per-rune lowercase mapping -- not Unicode case folding.
+    @given(char=gen.non_ascii_characters)
+    def test_non_ascii_addresses_are_preserved_and_remain_reachable(self, api, char, mongo):
+        """`sanitizeEmail` folds ASCII A-Z only, leaving every other byte alone.
 
-        For characters whose uppercase form expands (U+FB00 "ff" -> "FF") the
-        mapping is lossy: registering the uppercased address stores a value the
-        original address can never match again, and login fails with the 500
-        unknown-email path. Registering both forms yields two distinct
-        accounts.
+        It used to use Go's `strings.ToLower`, a per-rune Unicode mapping whose
+        uppercase forms can expand (U+FB00 "ff" -> "FF" -> "ff"), which made an
+        address registered in uppercase permanently unreachable. Hypothesis
+        found that; this is the property that replaced it.
 
-        Found by hypothesis, not by hand. Whatever a Rust port does here --
-        ASCII-only lowercasing, full case folding, NFKC normalisation, or
-        matching Go exactly -- it will change which accounts are reachable, so
-        the choice must be deliberate.
+        The guarantee now: whatever the user typed, minus ASCII case and
+        surrounding whitespace, always logs back in.
         """
-        suffix = f"-{uuid.uuid4().hex}@example.test"
-        original = f"{char}{suffix}"
-        uppercased = original.upper()
-        assume(uppercased.lower() != original)
+        address = f"{char}-{uuid.uuid4().hex}@example.test"
+        api.register(address, DEFAULT_PASSWORD).raise_for_status()
 
-        api.register(uppercased, DEFAULT_PASSWORD).raise_for_status()
+        # Stored verbatim -- the non-ASCII character survives normalisation.
+        assert mongo["auth"]["users"].find_one({"email": address}) is not None
+        assert api.login(address, DEFAULT_PASSWORD).status_code == 200
 
-        # The address the user originally typed no longer resolves...
-        assert api.login(original, DEFAULT_PASSWORD).status_code == 500
-        # ...and registering it succeeds, creating a second, separate account.
-        assert api.register(original, DEFAULT_PASSWORD).status_code == 200
+    @prop_settings
+    @given(char=gen.non_ascii_characters)
+    def test_ascii_case_still_folds_around_non_ascii(self, api, char):
+        """Folding ASCII must keep working even when the address also contains
+        characters that are deliberately left alone."""
+        address = f"{char}-{uuid.uuid4().hex}@example.test"
+        api.register(address, DEFAULT_PASSWORD).raise_for_status()
+
+        shouty = char + address[len(char):].upper()
+        assert api.login(f"  {shouty}  ", DEFAULT_PASSWORD).status_code == 200
 
     @prop_settings
     @given(password=gen.passwords)
-    def test_any_password_can_be_registered_and_used(self, api, password):
-        """argon2 imposes no length or character restrictions, and no policy is
-        applied server-side."""
+    def test_any_password_at_or_above_the_minimum_length_works(self, api, password):
+        """Above the length floor, argon2 imposes no character restrictions --
+        unicode, whitespace and control characters must all round-trip."""
         email = unique_email()
         assert api.register(email, password).status_code == 200
         assert api.login(email, password).status_code == 200
@@ -243,9 +244,10 @@ class TestTimezones:
     @prop_settings
     @given(timezone=gen.invalid_timezones)
     def test_unparseable_zones_are_rejected_without_side_effects(self, device, api, timezone):
+        """Includes the blank cases: time.LoadLocation("") resolves to UTC in
+        Go, so blank input is screened out before it reaches LoadLocation."""
         api.set_timezone(device.token, "UTC").raise_for_status()
         resp = api.set_timezone(device.token, timezone)
-        assume(resp.status_code != 200)  # "" resolves to UTC in Go; see test_auth
         assert resp.status_code == 400
         assert api.me(device.token).json()["timezone"] == "UTC"
 
@@ -268,9 +270,7 @@ class TestValidationRejection:
         assume(entity_type not in gen.config.SYNC_ENTITY_TYPES)
         first, _ = devices
         resp = first.api.push(first.token, [update(entity_type=entity_type)])
-        # 400 for a well-formed-but-unknown type; 500 when the validator
-        # rejects the field first (e.g. whitespace-only fails `required`).
-        assert resp.status_code in (400, 500)
+        assert resp.status_code == 400
 
     @prop_settings
     @given(operation=st.text(min_size=1, max_size=12))
@@ -278,4 +278,4 @@ class TestValidationRejection:
         assume(operation not in gen.config.SYNC_OPERATIONS)
         first, _ = devices
         resp = first.api.push(first.token, [update(operation=operation)])
-        assert resp.status_code == 500
+        assert resp.status_code == 400

@@ -50,6 +50,19 @@ func (a *AuthService) getUserByEmail(email string) (*User, error) {
 	return a.userCollection.GetUserByEmail(email)
 }
 
+// dummyPasswordHash is a valid argon2 encoding of a value nobody can supply.
+// It exists purely so that logging in with an unknown email performs the same
+// work as logging in with a known one. Generated with the same DefaultConfig
+// the service uses, so the cost parameters match.
+var dummyPasswordHash = func() string {
+	config := argon2.DefaultConfig()
+	hashed, err := config.HashEncoded([]byte("perfice-login-timing-equaliser"))
+	if err != nil {
+		panic(err)
+	}
+	return string(hashed)
+}()
+
 type UserAlreadyExistsError struct{}
 
 func (e UserAlreadyExistsError) Error() string {
@@ -140,7 +153,15 @@ func (a *AuthService) Login(email string, password string) (Session, error) {
 	}
 
 	if user == nil {
-		return Session{}, errors.New("invalid email")
+		// Deliberately the same error as a wrong password. Returning a
+		// distinguishable error here leaked account existence: the controller
+		// mapped it to 500 while a bad password gave 401.
+		//
+		// Verify against a throwaway hash first so an unknown address costs
+		// roughly the same as a known one; otherwise the status codes match
+		// but the response time still answers "does this account exist?".
+		_, _ = argon2.VerifyEncoded([]byte(password), []byte(dummyPasswordHash))
+		return Session{}, InvalidCredentialsError{}
 	}
 
 	// Only check confirmation if mail service has been configured

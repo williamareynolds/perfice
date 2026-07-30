@@ -62,26 +62,23 @@ def sync_updates(draw, entity_type: str | None = None, max_entities: int = 4):
     }
 
 
-# Local parts for the case/padding round-trip property.
-#
-# Deliberately ASCII. The server sanitises with Go's strings.ToLower, which is
-# a simple per-rune mapping rather than Unicode case folding, so for some code
-# points lower(upper(x)) != x -- U+FB00 "ff" uppercases to the two-character
-# "FF", which lowercases to "ff". Those cases are not a round-trip and are
-# pinned separately in test_properties.TestEmailSanitisation.
+# Local parts for the case/padding round-trip property. ASCII, because ASCII
+# case is exactly what the server folds.
 email_local_parts = st.text(
     alphabet=st.characters(min_codepoint=48, max_codepoint=122, whitelist_categories=("Ll", "Lu", "Nd")),
     min_size=1,
     max_size=12,
 )
 
-# Characters whose uppercase form does not lowercase back to the original.
-# Any port that changes the case-mapping strategy (ASCII-only, full folding,
-# NFKC normalisation) will change which accounts are reachable.
-non_round_tripping_characters = st.sampled_from(["ﬀ", "ﬁ", "ß", "ŉ", "ǰ", "ﬅ"])
+# Characters whose Unicode uppercase form expands or maps outside ASCII. The
+# sanitiser must leave these bytes untouched: folding them with Go's
+# strings.ToLower was not a round trip and made such addresses unreachable.
+non_ascii_characters = st.sampled_from(["ﬀ", "ﬁ", "ß", "ŉ", "ǰ", "ﬅ", "é", "ü", "ł", "İ"])
 
-# argon2 hashes anything; no length limit is enforced by the service.
-passwords = st.text(min_size=1, max_size=128)
+# Registration enforces a minimum length (auth.MinPasswordLength = 8); above
+# that argon2 accepts anything, and no character classes are required.
+MIN_PASSWORD_LENGTH = 8
+passwords = st.text(min_size=MIN_PASSWORD_LENGTH, max_size=128)
 
 # time.LoadLocation accepts IANA names. These all exist in the Go tzdata that
 # ships with the container images and with a normal Go toolchain.
@@ -100,6 +97,10 @@ valid_timezones = st.sampled_from(
     ]
 )
 
+# Every one of these must be rejected. Note which ones Go's time.LoadLocation
+# would accept on its own: "" resolves to UTC, and "Europe//Amsterdam" resolves
+# because LoadLocation ends up opening a filesystem path the OS normalises.
+# Both are screened before LoadLocation is reached.
 invalid_timezones = st.sampled_from(
     [
         "Not/AZone",
@@ -108,6 +109,8 @@ invalid_timezones = st.sampled_from(
         "  ",
         "utc/utc",
         "Europe//Amsterdam",
+        "/Europe/Amsterdam",
+        "Europe/Amsterdam/",
         "../../etc/passwd",
     ]
 )

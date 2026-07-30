@@ -7,6 +7,7 @@ services:
     image: ghcr.io/p0lloc/perfice_auth:latest
     container_name: auth
     environment:
+      INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
       GRPC_PORT: 5001
       HTTP_PORT: 8081
       MONGO_URL: mongodb://localhost:27017
@@ -23,6 +24,7 @@ services:
     image: ghcr.io/p0lloc/perfice_sync:latest
     container_name: sync
     environment:
+      INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
       PORT: 8082
       MONGO_URL: mongodb://localhost:27017
       AUTH_GRPC_URL: auth:5001
@@ -43,6 +45,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
       AUTH_GRPC_URL: auth:5001
       AUTH_HTTP_URL: http://auth:8081
       SYNC_URL: http://sync:8082
@@ -58,6 +61,7 @@ services:
     image: ghcr.io/p0lloc/perfice_integration:latest
     container_name: integration
     environment:
+      INTERNAL_SECRET: CHANGE_ME_SHARED_GATEWAY_SECRET
       MONGO_URL: mongodb://localhost:27017
       PORT: 8080
       CALLBACK_URL_BASE: http://localhost:3000

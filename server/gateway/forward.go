@@ -19,6 +19,7 @@ type RequestForwarder struct {
 	router           *fiber.Router
 	authenticated    bool
 	forwardedHeaders []string
+	internalSecret   string
 }
 
 func (r *RequestForwarder) forwardRequest(httpClient http.Client, c *fiber.Ctx, route *ForwardedRoute) error {
@@ -55,6 +56,8 @@ func (r *RequestForwarder) forwardRequest(httpClient http.Client, c *fiber.Ctx, 
 		req.Header.Set(keyString, string(value))
 	})
 
+	// Set after the allowlist copy above, so a client-supplied value of any of
+	// these headers is discarded and then overwritten.
 	if val := c.Locals(userIdLocal); val != nil {
 		req.Header.Set("x-userid", val.(string))
 	}
@@ -62,6 +65,12 @@ func (r *RequestForwarder) forwardRequest(httpClient http.Client, c *fiber.Ctx, 
 	if val := c.Locals(sessionIdLocal); val != nil {
 		req.Header.Set("x-sessionid", val.(string))
 	}
+
+	// Proves to the backend that the request came through the gateway. The
+	// backends trust the identity headers above without verification, so this
+	// is what keeps an accidentally exposed backend port from being an instant
+	// account-impersonation hole.
+	req.Header.Set(util.InternalSecretHeader, r.internalSecret)
 
 	if route.forwardCookies != nil {
 		for _, cookie := range route.forwardCookies {
@@ -177,12 +186,12 @@ func (r *RequestForwarder) Delete(path string, remotePath string, params ...stri
 
 func newRequestForwarder(baseUrl string, authMiddleware fiber.Handler, httpClient *http.Client, router *fiber.Router, authenticated bool) *RequestForwarder {
 	return &RequestForwarder{baseUrl, authMiddleware, httpClient,
-		router, authenticated, []string{"content-type"}}
+		router, authenticated, []string{"content-type"}, util.RequireInternalSecret()}
 }
 
 func newRequestForwarderWithHeaders(baseUrl string, authMiddleware fiber.Handler, httpClient *http.Client, router *fiber.Router,
 	authenticated bool, forwardedHeaders []string) *RequestForwarder {
 
 	return &RequestForwarder{baseUrl, authMiddleware, httpClient,
-		router, authenticated, forwardedHeaders}
+		router, authenticated, forwardedHeaders, util.RequireInternalSecret()}
 }

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pb "perfice.adoe.dev/proto"
+	"perfice.adoe.dev/util"
 )
 
 type Gateway struct {
@@ -118,13 +119,15 @@ func (a *Gateway) setupSentry() {
 func (a *Gateway) run() {
 	httpClient := http.Client{}
 
+	// Fails fast when the shared secret is missing, before any listener opens.
+	util.RequireInternalSecret()
+
 	app := fiber.New(
 		fiber.Config{
-			ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+			ErrorHandler: util.NewErrorHandler(func(err error) {
 				log.Println("Error occurred:", err)
 				sentry.CaptureException(err)
-				return ctx.SendStatus(fiber.StatusInternalServerError)
-			},
+			}),
 		})
 
 	app.Use(recover.New(

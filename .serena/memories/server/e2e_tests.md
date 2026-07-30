@@ -22,7 +22,11 @@ Needs Docker + Go toolchain + uv. `docker-compose.yml` here runs **only** Mongo 
 - Test isolation is "drop the three service databases", not per-write undo. Caveat: the integration service caches provider definitions in memory at boot, so tests that assert an *empty* provider list need `stack.restart("integration")` (the `reloaded_integration` fixture) — a DB drop alone does not clear the cache.
 - Ports are offset from production defaults (gateway 13000, auth 15001/18081, sync 18082, integration 18080) so a dev stack can run alongside.
 
-## The `characterization` marker (28 tests)
+**Updated 2026-07-30**: the backend was then hardened using this suite, so the tests now encode *intended* behaviour, not legacy quirks. 212 tests, only 3 still `characterization`-marked. The list below is historical — see `mem:server/hardening_2026_07` for what each item became.
+
+Also note `INTERNAL_SECRET` is now mandatory: `harness/config.py` supplies it to every service, and a port that ignores it fails `TestBackendsRequireTheGatewaySecret`.
+
+## The `characterization` marker (was 28 tests, now 3)
 
 Marks behaviour that is surprising or arguably a bug, pinned deliberately with a docstring explaining the Go code and the porting decision. `pytest -m characterization`. These are the decisions the rewrite must make consciously. The sharpest:
 

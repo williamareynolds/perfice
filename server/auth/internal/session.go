@@ -24,6 +24,14 @@ type Session struct {
 	Expiry      int64 `bson:"expiry"`
 }
 
+// InvalidSessionError is returned when a refresh is attempted with a token pair
+// that does not match a live session.
+type InvalidSessionError struct{}
+
+func (e InvalidSessionError) Error() string {
+	return "invalid session"
+}
+
 var accessTokenExpiry = time.Minute * 15
 var refreshTokenLength = 16
 var characters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -68,7 +76,32 @@ func (s *SessionService) AuthenticateToken(tokenStr string) (string, string, err
 		return "", "", errors.New("invalid token")
 	}
 
+	// A valid signature is not enough: the session must still exist. Without
+	// this check a token stays usable for its full 15 minute lifetime after
+	// logout or account deletion, which makes logging out on a shared device
+	// meaningless.
+	if err := s.RequireLiveSession(sub, session); err != nil {
+		return "", "", err
+	}
+
 	return sub, session, nil
+}
+
+// RequireLiveSession reports whether the session is still active for the user.
+func (s *SessionService) RequireLiveSession(userId string, sessionId string) error {
+	session, err := mongoutil.FindOne[Session](s.sessionCollection, bson.M{
+		"_id":  sessionId,
+		"user": userId,
+	})
+	if err != nil {
+		return err
+	}
+
+	if session == nil {
+		return errors.New("session has been revoked")
+	}
+
+	return nil
 }
 
 func (s *SessionService) Create(userId string) (Session, error) {
@@ -108,7 +141,9 @@ func (s *SessionService) Refresh(accessToken string, refreshToken string) (Sessi
 	}
 
 	if session == nil {
-		return Session{}, errors.New("unable to refresh token: invalid session")
+		// Typed so the controller can answer 401 instead of 500: presenting a
+		// stale or mismatched token pair is a client condition, not a fault.
+		return Session{}, InvalidSessionError{}
 	}
 
 	newExpiry := time.Now().Add(accessTokenExpiry).UnixMilli()
@@ -157,6 +192,10 @@ func (s *SessionService) createAccessToken(userId string, sessionId string, expi
 		"sub":     userId,
 		"session": sessionId,
 		"exp":     expiry / 1000,
+		// exp is truncated to whole seconds, so without a unique claim two
+		// refreshes inside the same second produce a byte-identical token.
+		// jti makes every issued token distinct and greppable in logs.
+		"jti": uuid.NewString(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

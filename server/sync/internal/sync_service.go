@@ -43,10 +43,11 @@ func (s *SyncService) Push(updates []IncomingSyncUpdate, userId string, sessionI
 		util.SliceFilter(sessions.Sessions, func(session *pb.Session) bool { return session.Id != sessionId }),
 		func(session *pb.Session) string { return session.Id })
 
-	if len(otherSessions) == 0 {
-		// There are no other sessions to sync to
-		return nil, nil
-	}
+	// Note: we deliberately do NOT return early when there are no other
+	// sessions. Doing so used to discard the push entirely -- a single-device
+	// user's data was never stored at all, and /fullPull returned nothing.
+	// Entities are always persisted; only the replication record below is
+	// conditional, since there is nobody to replay it to.
 
 	// Sort updates by timestamp
 	sort.SliceStable(updates, func(i, j int) bool { return updates[i].Timestamp < updates[j].Timestamp })
@@ -76,6 +77,12 @@ func (s *SyncService) Push(updates []IncomingSyncUpdate, userId string, sessionI
 				if err != nil {
 					return nil, err
 				}
+			}
+
+			if len(otherSessions) == 0 {
+				// Nothing to replay to. Storing a record with an empty client
+				// list would only accumulate rows nobody ever acks.
+				return nil, nil
 			}
 
 			err = s.syncUpdateCollection.Insert(sessionContext, SyncUpdate{
@@ -165,8 +172,8 @@ func (s *SyncService) Pull(userId string, sessionId string) ([]SyncUpdate, []byt
 	return updates, key, nil
 }
 
-func (s *SyncService) Ack(sessionId string, updates []string) error {
-	_, err := s.syncUpdateCollection.PullSessionFromUpdatesWithIds(updates, sessionId)
+func (s *SyncService) Ack(userId string, sessionId string, updates []string) error {
+	_, err := s.syncUpdateCollection.PullSessionFromUpdatesWithIds(userId, updates, sessionId)
 	return err
 }
 
@@ -197,7 +204,7 @@ func (s *SyncService) FullPull(userId string, sessionId string, entityTypes []st
 	}
 
 	// Session has fully synced this entity type, they don't need to know about these updates
-	_, err := s.syncUpdateCollection.PullSessionFromUpdatesWithEntityTypes(entityTypes, sessionId)
+	_, err := s.syncUpdateCollection.PullSessionFromUpdatesWithEntityTypes(userId, entityTypes, sessionId)
 	if err != nil {
 		return nil, err
 	}

@@ -35,7 +35,7 @@ func NewIntegrationProcessService(updatesCollection *IntegrationUpdateService, f
 func (s *IntegrationProcessService) handleIntegrationResponse(definition model.IntegrationEntityDefinition, integration model.UserIntegration, body []byte, now time.Time) error {
 	var data interface{}
 	if err := json.Unmarshal(body, &data); err != nil {
-		return fmt.Errorf("failed to parse JSON: %v", err)
+		return MalformedPayloadError{}
 	}
 
 	schema, err := s.getSchema(definition)
@@ -177,7 +177,11 @@ func (s *IntegrationProcessService) handleItem(def model.IntegrationEntityDefini
 		}
 
 		if value == nil {
-			return nil
+			// Skip just this field. This used to `return nil`, abandoning the
+			// entire record: a provider omitting one optional field caused
+			// total silent data loss for that item, with a 200 back to the
+			// provider and nothing logged.
+			continue
 		}
 
 		extractedData[questionId] = value

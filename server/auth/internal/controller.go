@@ -3,6 +3,7 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -67,7 +68,12 @@ func (c *AuthController) Register(ctx *fiber.Ctx) error {
 		return ctx.SendStatus(fiber.StatusBadRequest)
 	}
 
-	if err := c.authService.Register(c.sanitizeEmail(request.Email), request.Password); err != nil {
+	email := c.sanitizeEmail(request.Email)
+	if err := validateCredentials(email, request.Password); err != nil {
+		return ctx.Status(fiber.StatusBadRequest).SendString(err.Error())
+	}
+
+	if err := c.authService.Register(email, request.Password); err != nil {
 		if errors.Is(err, UserAlreadyExistsError{}) {
 			return ctx.Status(fiber.StatusBadRequest).SendString("User already exists")
 		} else {
@@ -78,8 +84,71 @@ func (c *AuthController) Register(ctx *fiber.Ctx) error {
 	return ctx.SendStatus(fiber.StatusOK)
 }
 
+// sanitizeEmail produces the canonical stored form of an address.
+//
+// Only ASCII A-Z is folded. The previous implementation used strings.ToLower,
+// a per-rune Unicode mapping, which is not a round trip: U+FB00 ("ff")
+// uppercases to the two-character "FF", which lowercases to "ff". An address
+// containing such a character, registered in uppercase, could never be logged
+// into again -- and re-registering it silently created a second account.
+//
+// ASCII-only folding is round-trip safe by construction, matches what mail
+// systems do in practice, and leaves every existing all-ASCII account
+// unchanged.
 func (c *AuthController) sanitizeEmail(email string) string {
-	return strings.Trim(strings.ToLower(email), " ")
+	trimmed := strings.TrimSpace(email)
+
+	var b strings.Builder
+	b.Grow(len(trimmed))
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+		if ch >= 'A' && ch <= 'Z' {
+			ch += 'a' - 'A'
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
+// isCanonicalTimezone screens out names that time.LoadLocation happens to
+// resolve but that are not canonical IANA identifiers.
+//
+// Two cases matter. An empty string resolves to UTC, so a blank field used to
+// be accepted and then stored verbatim, leaving the user on a timezone of ""
+// that nothing can resolve later. And redundant separators such as
+// "Europe//Amsterdam" resolve too, because LoadLocation ends up opening a
+// filesystem path the OS normalises -- the stored value then differs from
+// every other client's spelling of the same zone, and other tz libraries
+// (notably Rust's chrono-tz) reject it outright.
+func isCanonicalTimezone(timezone string) bool {
+	if strings.TrimSpace(timezone) == "" {
+		return false
+	}
+
+	// Rejects leading, trailing and doubled separators in one pass.
+	for _, segment := range strings.Split(timezone, "/") {
+		if segment == "" {
+			return false
+		}
+	}
+
+	return true
+}
+
+// MinPasswordLength is enforced at registration and password reset. Existing
+// shorter passwords keep working; only new ones are checked.
+const MinPasswordLength = 8
+
+func validateCredentials(email string, password string) error {
+	if _, err := mail.ParseAddress(email); err != nil {
+		return errors.New("invalid email address")
+	}
+
+	if len(password) < MinPasswordLength {
+		return fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	}
+
+	return nil
 }
 
 func (c *AuthController) Login(ctx *fiber.Ctx) error {
@@ -111,6 +180,9 @@ func (c *AuthController) Refresh(ctx *fiber.Ctx) error {
 
 	session, err := c.sessionService.Refresh(request.AccessToken, request.RefreshToken)
 	if err != nil {
+		if errors.Is(err, InvalidSessionError{}) {
+			return ctx.Status(fiber.StatusUnauthorized).SendString("Invalid session")
+		}
 		return err
 	}
 
@@ -133,6 +205,10 @@ func (c *AuthController) SetTimezone(ctx *fiber.Ctx) error {
 	}
 
 	userId := getUserId(ctx)
+
+	if !isCanonicalTimezone(request.Timezone) {
+		return ctx.Status(fiber.StatusBadRequest).SendString("Invalid timezone")
+	}
 
 	_, err := time.LoadLocation(request.Timezone)
 	if err != nil {
@@ -247,8 +323,21 @@ func NewFeedbackController(feedbackService *FeedbackService) *FeedbackController
 	return &FeedbackController{feedbackService}
 }
 
+// MaxFeedbackLength bounds a deliberately unauthenticated endpoint. Feedback
+// has to stay anonymous -- users report problems they cannot log in to
+// describe -- so the protection is a size cap rather than a credential.
+const MaxFeedbackLength = 4096
+
 func (c *FeedbackController) Feedback(ctx *fiber.Ctx) error {
 	feedback := ctx.Body()
+	if len(feedback) == 0 {
+		return ctx.Status(fiber.StatusBadRequest).SendString("Feedback is empty")
+	}
+
+	if len(feedback) > MaxFeedbackLength {
+		return ctx.Status(fiber.StatusBadRequest).SendString("Feedback is too long")
+	}
+
 	if err := c.feedbackService.Insert(string(feedback)); err != nil {
 		return err
 	}

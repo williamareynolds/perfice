@@ -37,6 +37,10 @@ KAFKA_URL = f"localhost:{KAFKA_PORT}"
 JWT_SECRET = "e2e-test-secret-do-not-use-in-prod"
 # XChaCha20-Poly1305 requires exactly 32 bytes.
 ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef"
+# Shared secret the gateway attaches to every proxied request; the backends
+# reject anything without it. Every service must be given the same value or
+# nothing gets through.
+INTERNAL_SECRET = "e2e-internal-secret"
 
 GATEWAY_URL = f"http://localhost:{GATEWAY_PORT}"
 AUTH_DIRECT_URL = f"http://localhost:{AUTH_HTTP_PORT}"
@@ -93,7 +97,12 @@ def _sentry_off() -> dict[str, str]:
 def service_specs() -> list[ServiceSpec]:
     """Ordered by startup dependency: auth must be up before sync/integration
     (they dial its gRPC port), and the gateway last."""
-    common = {"MONGO_URL": MONGO_URL, "KAFKA_URL": KAFKA_URL, **_sentry_off()}
+    common = {
+        "MONGO_URL": MONGO_URL,
+        "KAFKA_URL": KAFKA_URL,
+        "INTERNAL_SECRET": INTERNAL_SECRET,
+        **_sentry_off(),
+    }
     return [
         ServiceSpec(
             name="auth",

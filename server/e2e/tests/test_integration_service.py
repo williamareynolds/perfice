@@ -190,16 +190,11 @@ class TestUserIntegrations:
         bob.api.delete_integration(bob.token, created["id"])
         assert len(alice.api.integrations(alice.token).json()) == 1
 
-    @pytest.mark.characterization
-    def test_creating_an_integration_for_an_unknown_type_is_a_500(self, device):
+    def test_creating_an_integration_for_an_unknown_type_is_a_400(self, device):
         """`UserIntegrationService.Create` returns `(nil, nil)` when no matching
-        entity definition exists, and the controller immediately dereferences
-        the nil pointer with `ctx.JSON(*integration)`.
-
-        The panic is caught by Fiber's recover middleware, so the client sees a
-        500 rather than a crash -- but it is a nil dereference on a trivially
-        reachable input path, and a port should return a real 400 here.
-        """
+        entity definition exists. The controller used to dereference that nil
+        immediately with `ctx.JSON(*integration)`, panicking on a trivially
+        reachable input; recover turned it into a 500."""
         resp = device.api.create_integration(
             device.token,
             {
@@ -210,7 +205,7 @@ class TestUserIntegrations:
                 "options": {},
             },
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.parametrize(
         "missing", ["integrationType", "entityType", "formId", "fields", "options"]
@@ -275,18 +270,13 @@ class TestWebhookIngestion:
         assert len(updates) == 1
         assert updates[0]["data"] == {"question-1": 3}
 
-    @pytest.mark.characterization
-    def test_a_missing_mapped_field_silently_drops_the_whole_record(
+    def test_a_missing_mapped_field_drops_only_that_field(
         self, seeded_provider, device, api
     ):
-        """`handleItem` does `if value == nil { return nil }` -- when any mapped
-        field is absent from the payload it abandons the *entire* item, not
-        just that field, and reports success to the provider.
-
-        So a provider that omits an optional field causes silent, total data
-        loss for that record with no error anywhere. Very much worth fixing in
-        the port; pinned here so the change is a decision.
-        """
+        """`handleItem` used to `return nil` when any mapped field was absent,
+        abandoning the entire item and reporting success to the provider -- so
+        a provider omitting one optional field caused silent total data loss
+        for that record. Now only the field is skipped."""
         created = _create_integration(device)
         resp = api.request(
             "POST",
@@ -294,7 +284,11 @@ class TestWebhookIngestion:
             json={"id": "sample-1", "ts": 1_700_000_000_000},  # no "count"
         )
         assert resp.status_code == 200
-        assert device.api.integration_updates(device.token).json() == []
+
+        updates = device.api.integration_updates(device.token).json()
+        assert len(updates) == 1
+        assert updates[0]["identifier"] == "sample-1"
+        assert updates[0]["data"] == {}
 
     def test_the_webhook_endpoint_needs_no_authentication(self, seeded_provider, device, api):
         """Providers cannot present our bearer token, so the token in the path
@@ -307,11 +301,13 @@ class TestWebhookIngestion:
         )
         assert resp.status_code == 200
 
-    def test_an_unknown_webhook_token_is_rejected(self, seeded_provider, api):
+    def test_an_unknown_webhook_token_is_404(self, seeded_provider, api):
+        """Providers retry on 5xx, so a permanently bad token answering 500
+        meant retrying forever."""
         resp = api.request(
             "POST", "/integrations/push/not-a-real-token", json={"id": "x", "ts": 1, "count": 1}
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 404
 
     def test_updates_are_scoped_to_the_owning_user(self, seeded_provider, api):
         alice = new_user_with_devices(api, 1)[0]
@@ -353,7 +349,7 @@ class TestWebhookIngestion:
         device.api.delete_integration(device.token, created["id"]).raise_for_status()
         assert device.api.integration_updates(device.token).json() == []
 
-    def test_malformed_json_is_rejected(self, seeded_provider, device, api):
+    def test_malformed_json_is_400(self, seeded_provider, device, api):
         created = _create_integration(device)
         resp = api.request(
             "POST",
@@ -361,4 +357,4 @@ class TestWebhookIngestion:
             data=b"not json",
             headers={"content-type": "application/json"},
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 400

@@ -5,15 +5,15 @@ bearer token to a user via auth's gRPC service and then injects `X-Userid` /
 `X-Sessionid` headers into the proxied request. The backends trust those
 headers with no verification whatsoever.
 
-That design is fine *provided* two things hold, and both are tested here:
+Two things must hold, and both are tested here:
 
   1. A client cannot inject those headers through the gateway.
-  2. The backends are unreachable from anywhere except the gateway.
+  2. A request that did not come through the gateway is refused outright.
 
-Point 2 cannot be enforced by code -- it is a deployment property -- so the
-tests below demonstrate exactly what an exposed backend would allow. Those
-tests passing is not a bug report; they are executable documentation of why
-only the gateway's port may ever be published.
+The second is enforced by a shared secret (`X-Internal-Secret`, read from
+`INTERNAL_SECRET`) that the gateway attaches to every proxied request and every
+backend requires. Exposing a backend port is still a misconfiguration, but it
+is no longer instant account impersonation.
 """
 
 from __future__ import annotations
@@ -111,14 +111,13 @@ class TestAuthenticationGating:
         resp = api.request("GET", "/api/sync/key", headers={"Authorization": authorization})
         assert resp.status_code == 401
 
-    def test_a_valid_token_from_a_deleted_user_is_rejected_downstream(self, api):
-        """The JWT stays cryptographically valid after deletion, so the gateway
-        still resolves it; what changes is that the user's data is gone."""
+    def test_a_token_from_a_deleted_user_is_rejected(self, api):
+        """The JWT stays cryptographically valid after deletion, so rejection
+        depends on the session lookup -- account deletion removes every session
+        for the user."""
         device = new_user_with_devices(api, 1)[0]
         api.delete_account(device.token).raise_for_status()
-        resp = api.request("GET", "/api/sync/key", token=device.token)
-        assert resp.status_code == 200
-        assert resp.json()["key"] is None
+        assert api.request("GET", "/api/sync/key", token=device.token).status_code == 401
 
     def test_the_oauth_callback_route_is_deliberately_unauthenticated(self, api):
         """Providers redirect the browser here without our bearer token, so
@@ -135,17 +134,12 @@ class TestRouting:
         email, password = register_user(api)
         assert api.login(email, password).status_code == 200
 
-    @pytest.mark.characterization
-    def test_unknown_routes_return_500_not_404(self, api):
-        """Fiber raises its "Cannot GET /x" as a 404-valued `*fiber.Error`, but
-        every service installs an ErrorHandler that discards the error's status
-        and unconditionally sends 500.
-
-        So the backend has no 404s at all: a typo'd path and a genuine server
-        fault are indistinguishable to a client. Worth changing in the port --
-        but changing it silently would break any client that keys off 500.
-        """
-        assert api.request("GET", "/no/such/route").status_code == 500
+    def test_unknown_routes_are_404(self, api):
+        """Fiber raises "Cannot GET /x" as a 404-valued *fiber.Error. The old
+        ErrorHandler discarded that status and sent 500 for everything, so the
+        backend had no 404s at all and a typo'd path looked like a server
+        fault."""
+        assert api.request("GET", "/no/such/route").status_code == 404
 
     def test_path_parameters_are_interpolated_into_the_upstream_url(self, api):
         """Gateway maps local `/:id` onto a remote `%s`. A wrong param count
@@ -211,16 +205,13 @@ class TestCors:
         assert resp.headers.get("Access-Control-Allow-Origin") != "https://evil.example"
 
 
-class TestBackendsMustNotBeExposed:
-    """These tests assert the *absence* of protection on the backends.
+class TestBackendsRequireTheGatewaySecret:
+    """The backends still trust X-Userid without verification -- that is the
+    architecture. What changed is that they first require proof the request
+    came through the gateway, so an exposed port is a misconfiguration rather
+    than an immediate compromise."""
 
-    They exist so that the deployment requirement is impossible to forget: if
-    a future change adds real authentication to the backends, these tests fail
-    and should be rewritten deliberately.
-    """
-
-    @pytest.mark.characterization
-    def test_sync_trusts_the_user_id_header_with_no_verification(self, api, sync_direct):
+    def test_sync_rejects_a_forged_identity_without_the_secret(self, api, sync_direct):
         victim, _ = new_user_with_devices(api, 2)
         victim.set_key(b"victim-secret-key")
 
@@ -229,39 +220,73 @@ class TestBackendsMustNotBeExposed:
             "/key",
             headers={"X-Userid": victim.user_id, "X-Sessionid": victim.session_id},
         )
-        assert resp.status_code == 200
-        # Full read of another user's key with no credentials at all.
-        assert resp.json()["key"] is not None
+        assert resp.status_code == 401
 
-    @pytest.mark.characterization
-    def test_sync_requires_only_the_presence_of_both_headers(self, sync_direct):
-        """No format check: any string is accepted as an identity."""
+    def test_sync_accepts_the_same_request_with_the_secret(self, api, sync_direct):
+        """Confirms the 401 above is the secret check, not something else, and
+        documents that the identity headers remain fully trusted once past it."""
+        victim, _ = new_user_with_devices(api, 2)
+        victim.set_key(b"victim-secret-key")
+
         resp = sync_direct.request(
-            "GET", "/key", headers={"X-Userid": "not-a-uuid", "X-Sessionid": "whatever"}
+            "GET",
+            "/key",
+            headers={
+                "X-Userid": victim.user_id,
+                "X-Sessionid": victim.session_id,
+                "X-Internal-Secret": config.INTERNAL_SECRET,
+            },
         )
         assert resp.status_code == 200
+        assert resp.json()["key"] is not None
 
-    def test_sync_rejects_requests_with_no_identity_headers(self, sync_direct):
-        assert sync_direct.request("GET", "/key").status_code == 401
+    def test_a_wrong_secret_is_rejected(self, sync_direct):
+        resp = sync_direct.request(
+            "GET",
+            "/key",
+            headers={
+                "X-Userid": "anyone",
+                "X-Sessionid": "whatever",
+                "X-Internal-Secret": "not-the-secret",
+            },
+        )
+        assert resp.status_code == 401
 
-    @pytest.mark.characterization
-    def test_integration_needs_only_a_user_id_header(self, integration_direct):
-        """The integration service does not even look at X-Sessionid."""
+    def test_integration_requires_the_secret(self, integration_direct):
         resp = integration_direct.request("GET", "/integrations/", headers={"X-Userid": "anyone"})
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
-    @pytest.mark.characterization
-    def test_auth_http_is_directly_reachable(self, auth_direct):
-        """Registration bypasses the gateway entirely when auth's HTTP port is
-        exposed -- no rate limiting or origin checks apply.
-
-        Note the path: the auth service serves `/register`, and the `/auth`
-        prefix exists only in the gateway's route table. A port must keep the
-        two path spaces distinct.
-        """
+    def test_auth_http_requires_the_secret(self, auth_direct):
+        """Registration is unauthenticated by design, so without the secret the
+        auth service would still be openly writable if its port leaked."""
         from harness.client import unique_email
 
         resp = auth_direct.request(
-            "POST", "/register", json={"email": unique_email(), "password": "password"}
+            "POST", "/register", json={"email": unique_email(), "password": "password123"}
+        )
+        assert resp.status_code == 401
+
+    def test_sync_still_rejects_requests_with_no_identity_headers(self, sync_direct):
+        resp = sync_direct.request(
+            "GET", "/key", headers={"X-Internal-Secret": config.INTERNAL_SECRET}
+        )
+        assert resp.status_code == 401
+
+    def test_a_client_cannot_supply_the_secret_through_the_gateway(self, api):
+        """The secret is set after the header allowlist is applied, so a client
+        sending its own value cannot influence what the backend receives."""
+        victim, _ = new_user_with_devices(api, 2)
+        attacker, _ = new_user_with_devices(api, 2)
+        victim.set_key(b"victim-secret-key")
+
+        resp = api.request(
+            "GET",
+            "/api/sync/key",
+            token=attacker.token,
+            headers={
+                "X-Userid": victim.user_id,
+                "X-Internal-Secret": config.INTERNAL_SECRET,
+            },
         )
         assert resp.status_code == 200
+        assert resp.json()["key"] is None

@@ -33,13 +33,20 @@ func (c *SyncUpdateCollection) FindBySessionId(sessionId string) ([]SyncUpdate, 
 	return mongoutil.Find[SyncUpdate](c.collection, bson.M{"clients": sessionId})
 }
 
-func (c *SyncUpdateCollection) PullSessionFromUpdatesWithIds(updateIds []string, sessionId string) (bool, error) {
+// Both of the following scope on user as well as on the caller's session.
+//
+// Without the user filter these queries matched every user's updates and
+// relied entirely on session ids being unguessable to stay safe. Filtering on
+// the authenticated user makes the isolation structural rather than incidental,
+// and lets the collection be indexed on {user, clients}.
+
+func (c *SyncUpdateCollection) PullSessionFromUpdatesWithIds(userId string, updateIds []string, sessionId string) (bool, error) {
 	if len(updateIds) < 1 {
 		return false, nil
 	}
 
 	rs, err := c.collection.UpdateMany(context.Background(),
-		bson.M{"id": bson.M{"$in": updateIds}},
+		bson.M{"user": userId, "id": bson.M{"$in": updateIds}},
 		bson.M{"$pull": bson.M{"clients": sessionId}})
 
 	if err != nil {
@@ -49,13 +56,13 @@ func (c *SyncUpdateCollection) PullSessionFromUpdatesWithIds(updateIds []string,
 	return rs.ModifiedCount > 0, err
 }
 
-func (c *SyncUpdateCollection) PullSessionFromUpdatesWithEntityTypes(entityTypes []string, sessionId string) (bool, error) {
+func (c *SyncUpdateCollection) PullSessionFromUpdatesWithEntityTypes(userId string, entityTypes []string, sessionId string) (bool, error) {
 	if len(entityTypes) < 1 {
 		return false, nil
 	}
 
 	rs, err := c.collection.UpdateMany(context.Background(),
-		bson.M{"entityType": bson.M{"$in": entityTypes}},
+		bson.M{"user": userId, "entityType": bson.M{"$in": entityTypes}},
 		bson.M{"$pull": bson.M{"clients": sessionId}})
 
 	if err != nil {

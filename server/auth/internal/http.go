@@ -16,17 +16,20 @@ import (
 
 func (a *AuthApp) setupHttpServer(secret []byte, authService *AuthService, sessionService *SessionService, feedbackService *FeedbackService) {
 	app := fiber.New(fiber.Config{
-		ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+		ErrorHandler: util.NewErrorHandler(func(err error) {
 			log.Println("Error occurred:", err)
 			sentry.CaptureException(err)
-			return ctx.SendStatus(fiber.StatusInternalServerError)
-		},
+		}),
 	})
 
 	app.Use(recover.New(
 		recover.Config{
 			EnableStackTrace: true,
 		}))
+
+	// Every request must have come through the gateway. Registered before any
+	// route so it also covers the unauthenticated ones.
+	app.Use(util.InternalSecretMiddleware(util.RequireInternalSecret()))
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     "https://localhost, http://localhost:8000, http://localhost:5173, https://perfice.adoe.dev",
@@ -39,15 +42,19 @@ func (a *AuthApp) setupHttpServer(secret []byte, authService *AuthService, sessi
 	})
 
 	authController := NewAuthController(authService, sessionService)
+	// jwtMiddleware only proves the signature is ours; sessionMiddleware proves
+	// the session behind it has not been revoked.
+	sessionMiddleware := newSessionMiddleware(sessionService)
+	authenticated := []fiber.Handler{jwtMiddleware, authMiddleware, sessionMiddleware}
 
 	app.Post("/register", authController.Register)
 	app.Post("/login", authController.Login)
 	app.Post("/refresh", authController.Refresh)
-	app.Put("/timezone", jwtMiddleware, authMiddleware, authController.SetTimezone)
+	app.Put("/timezone", append(authenticated, authController.SetTimezone)...)
 
-	app.Get("/me", jwtMiddleware, authMiddleware, authController.Me)
-	app.Post("/delete", jwtMiddleware, authMiddleware, authController.DeleteAccount)
-	app.Post("/logout", jwtMiddleware, authMiddleware, authController.Logout)
+	app.Get("/me", append(authenticated, authController.Me)...)
+	app.Post("/delete", append(authenticated, authController.DeleteAccount)...)
+	app.Post("/logout", append(authenticated, authController.Logout)...)
 	app.Get("/confirm/:token", authController.ConfirmEmail)
 	app.Post("/resetInit", authController.InitResetPassword)
 	app.Post("/reset", authController.ResetPassword)
@@ -84,4 +91,26 @@ func authMiddleware(c *fiber.Ctx) error {
 	c.Locals(userIdLocal, *userId)
 	c.Locals(sessionIdLocal, *sessionId)
 	return c.Next()
+}
+
+// newSessionMiddleware rejects tokens whose session has been logged out or
+// deleted. Must run after authMiddleware, which populates the locals.
+func newSessionMiddleware(sessionService *SessionService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userId, ok := c.Locals(userIdLocal).(string)
+		if !ok {
+			return c.SendStatus(fiber.StatusUnauthorized)
+		}
+
+		sessionId, ok := c.Locals(sessionIdLocal).(string)
+		if !ok {
+			return c.SendStatus(fiber.StatusUnauthorized)
+		}
+
+		if err := sessionService.RequireLiveSession(userId, sessionId); err != nil {
+			return c.SendStatus(fiber.StatusUnauthorized)
+		}
+
+		return c.Next()
+	}
 }

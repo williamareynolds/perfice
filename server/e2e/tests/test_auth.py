@@ -79,18 +79,20 @@ class TestRegistration:
         )
         assert resp.status_code == 400
 
-    @pytest.mark.characterization
-    def test_registration_accepts_an_empty_password(self, api):
-        """No password policy exists server-side. argon2 hashes the empty
-        string happily and the account becomes usable."""
-        email = unique_email()
-        assert api.register(email, "").status_code == 200
-        assert api.login(email, "").status_code == 200
+    @pytest.mark.parametrize("password", ["", "short", "1234567"])
+    def test_passwords_below_the_minimum_length_are_rejected(self, api, password):
+        assert api.register(unique_email(), password).status_code == 400
 
-    @pytest.mark.characterization
-    def test_registration_accepts_a_non_email_string(self, api):
-        """The `email` field is never validated as an email address."""
-        assert api.register("definitely not an email", DEFAULT_PASSWORD).status_code == 200
+    def test_a_password_at_the_minimum_length_is_accepted(self, api):
+        email = unique_email()
+        assert api.register(email, "8charact").status_code == 200
+        assert api.login(email, "8charact").status_code == 200
+
+    @pytest.mark.parametrize(
+        "email", ["definitely not an email", "no-at-sign.example.test", "@example.test", ""]
+    )
+    def test_non_addresses_are_rejected(self, api, email):
+        assert api.register(email, DEFAULT_PASSWORD).status_code == 400
 
 
 class TestLogin:
@@ -105,25 +107,23 @@ class TestLogin:
         assert resp.status_code == 401
         assert resp.text == "Invalid username or password"
 
-    @pytest.mark.characterization
-    def test_unknown_email_is_500_not_401(self, api):
-        """`AuthService.Login` returns a bare `errors.New("invalid email")` for
-        an unknown user, which is not one of the typed errors the controller
-        maps, so it falls through to the 500 handler.
+    def test_unknown_email_is_indistinguishable_from_a_wrong_password(self, api):
+        """Both must answer 401 with the same body. Anything else is a user
+        enumeration oracle."""
+        known, password = register_user(api)
 
-        This is a user-enumeration oracle: unknown email gives 500, known email
-        with a bad password gives 401. A Rust port should almost certainly
-        return 401 for both -- but that is a deliberate behaviour change, and
-        this test is here so it cannot happen silently.
-        """
-        resp = api.login(unique_email(), DEFAULT_PASSWORD)
-        assert resp.status_code == 500
+        unknown_resp = api.login(unique_email(), DEFAULT_PASSWORD)
+        wrong_resp = api.login(known, "definitely-not-the-password")
+
+        assert unknown_resp.status_code == 401
+        assert wrong_resp.status_code == 401
+        assert unknown_resp.text == wrong_resp.text
 
     def test_access_token_is_signed_with_the_configured_secret(self, api):
         email, password = register_user(api)
         token = api.login(email, password).json()["accessToken"]
         claims = decode_access_token(token, verify=True)
-        assert set(claims) == {"sub", "session", "exp"}
+        assert set(claims) == {"sub", "session", "exp", "jti"}
 
     def test_access_token_is_rejected_when_signed_with_another_key(self, api):
         email, password = register_user(api)
@@ -183,28 +183,21 @@ class TestRefresh:
         device.refresh()
         assert device.refresh_token != old_refresh
 
-    @pytest.mark.characterization
-    def test_the_access_token_is_a_deterministic_function_of_its_claims(self, device, api):
-        """`createAccessToken` signs exactly {sub, session, exp} with HS256 and
-        no nonce, and `exp` is truncated to whole seconds. So refreshing twice
-        inside the same wall-clock second returns a *byte-identical* access
-        token, while the refresh token (16 random characters) always changes.
+    def test_every_issued_access_token_is_unique(self, device, api):
+        """`exp` is truncated to whole seconds, so without a nonce two refreshes
+        in the same second produced a byte-identical token. A `jti` claim now
+        makes each one distinct."""
+        seen = {device.access_token}
+        for _ in range(4):
+            device.refresh()
+            assert device.access_token not in seen
+            seen.add(device.access_token)
 
-        Consequences a port must keep in mind: access tokens are not unique
-        per refresh and cannot be used as an identifier, and issuing one leaks
-        nothing beyond the claims. Waiting out the second boundary does produce
-        a different token.
-        """
-        first = device.access_token
+    def test_the_token_carries_a_unique_jti(self, device):
+        first = decode_access_token(device.access_token)
         device.refresh()
-        same_second = device.access_token
-
-        time.sleep(1.1)
-        device.refresh()
-        later_second = device.access_token
-
-        assert same_second == first, "same-second refresh should reproduce the token"
-        assert later_second != first, "crossing a second boundary must change exp"
+        second = decode_access_token(device.access_token)
+        assert first["jti"] != second["jti"]
 
     def test_refresh_preserves_the_session_id(self, device):
         original_session = device.session_id
@@ -218,12 +211,12 @@ class TestRefresh:
     def test_the_old_token_pair_stops_working(self, device, api):
         old_access, old_refresh = device.access_token, device.refresh_token
         device.refresh()
-        assert api.refresh(old_access, old_refresh).status_code == 500
+        assert api.refresh(old_access, old_refresh).status_code == 401
 
     def test_refresh_with_mismatched_tokens_fails(self, api):
         a, b = new_user_with_devices(api, 2)
         # Both tokens are individually valid but belong to different sessions.
-        assert api.refresh(a.access_token, b.refresh_token).status_code == 500
+        assert api.refresh(a.access_token, b.refresh_token).status_code == 401
 
     @pytest.mark.characterization
     def test_refresh_is_not_rate_limited_and_never_expires_the_session(self, device, api):
@@ -246,20 +239,26 @@ class TestLogout:
 
     def test_refresh_after_logout_fails(self, device, api):
         api.logout(device.token).raise_for_status()
-        assert api.refresh(device.access_token, device.refresh_token).status_code == 500
+        assert api.refresh(device.access_token, device.refresh_token).status_code == 401
 
-    @pytest.mark.characterization
-    def test_the_access_token_still_works_after_logout(self, device, api):
-        """Logout deletes the session row, but authentication only verifies the
-        JWT signature and expiry -- it never checks that the session still
-        exists. So a logged-out access token keeps working for up to 15
-        minutes.
-
-        This is the single most security-relevant quirk in the auth service.
-        Reproduce it knowingly or fix it knowingly.
-        """
+    def test_the_access_token_stops_working_immediately_after_logout(self, device, api):
+        """The token stays cryptographically valid for its full 15 minutes, so
+        revocation depends entirely on the session lookup. Without it, logging
+        out on a shared device does nothing."""
         api.logout(device.token).raise_for_status()
-        assert api.me(device.token).status_code == 200
+        assert api.me(device.token).status_code == 401
+
+    def test_logging_out_one_session_leaves_the_other_usable(self, api):
+        a, b = new_user_with_devices(api, 2)
+        api.logout(a.token).raise_for_status()
+        assert api.me(a.token).status_code == 401
+        assert api.me(b.token).status_code == 200
+
+    def test_sync_endpoints_also_reject_a_logged_out_token(self, device, api):
+        """Revocation is enforced in the shared gRPC path, so it covers every
+        service behind the gateway, not just auth's own routes."""
+        api.logout(device.token).raise_for_status()
+        assert api.request("GET", "/api/sync/key", token=device.token).status_code == 401
 
 
 class TestTimezone:
@@ -282,13 +281,13 @@ class TestTimezone:
         api.set_timezone(a.token, "Australia/Sydney").raise_for_status()
         assert api.me(b.token).json()["timezone"] == "Australia/Sydney"
 
-    @pytest.mark.characterization
-    def test_empty_timezone_is_rejected(self, device, api):
-        """Go's time.LoadLocation("") resolves to UTC, but an empty string is
-        still rejected here because BodyParser leaves the field empty and
-        LoadLocation is called with it -- confirm which way it actually goes."""
-        resp = api.set_timezone(device.token, "")
-        assert resp.status_code in (200, 400)
+    @pytest.mark.parametrize("timezone", ["", "   "])
+    def test_blank_timezone_is_rejected(self, device, api, timezone):
+        """time.LoadLocation("") silently resolves to UTC, so a blank value used
+        to be accepted and stored verbatim, leaving the user on a timezone of
+        "" that nothing can resolve later."""
+        assert api.set_timezone(device.token, timezone).status_code == 400
+        assert api.me(device.token).json()["timezone"] == "Europe/Amsterdam"
 
 
 class TestAccountDeletion:
@@ -298,8 +297,7 @@ class TestAccountDeletion:
 
         assert api.delete_account(device.token).status_code == 200
         assert mongo["auth"]["users"].count_documents({}) == 0
-        # Unknown email now, which is the 500 path documented above.
-        assert api.login(email, password).status_code == 500
+        assert api.login(email, password).status_code == 401
 
     def test_delete_removes_all_sessions_for_the_user(self, api, mongo):
         devices = new_user_with_devices(api, 3)
@@ -338,8 +336,12 @@ class TestFeedback:
         assert stored["feedback"] == "the graphs are too green"
         assert stored["timestamp"] > 0
 
-    @pytest.mark.characterization
-    def test_feedback_is_unauthenticated(self, api):
-        """`/feedback` takes no credentials at all, so anyone on the internet
-        can write unbounded rows into the auth database."""
-        assert api.feedback("x" * 10_000).status_code == 200
+    def test_feedback_stays_anonymous_but_is_size_capped(self, api):
+        """Feedback must work without credentials -- people report problems they
+        cannot log in to describe -- so the abuse control is a size cap rather
+        than authentication."""
+        assert api.feedback("x" * 4096).status_code == 200
+        assert api.feedback("x" * 4097).status_code == 400
+
+    def test_empty_feedback_is_rejected(self, api):
+        assert api.feedback("").status_code == 400
