@@ -310,9 +310,13 @@ class TestAccountDeletion:
         api.delete_account(device.token).raise_for_status()
         assert api.register(email, password).status_code == 200
 
-    def test_deletion_purges_sync_data_via_kafka(self, api, mongo, synced_devices):
-        """auth publishes `userDeleted` to kafka; sync consumes it and drops
-        the user's entities, updates, key and salt."""
+    def test_deletion_purges_sync_data_via_the_event_bus(self, api, mongo, synced_devices):
+        """auth publishes `user.deleted`; sync consumes it and drops the user's
+        entities, updates, key and salt.
+
+        This is the only test that proves the event bus is wired up at all, in
+        either direction -- a broken publisher or a queue nothing is bound to
+        both show up here as data that outlives the account."""
         first, second = synced_devices
         first.push([__import__("harness.factories", fromlist=["update"]).update()])
         assert mongo["sync"]["trackables"].count_documents({"user": first.user_id}) == 1

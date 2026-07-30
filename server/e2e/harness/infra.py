@@ -1,4 +1,4 @@
-"""Lifecycle for the stateful dependencies (mongo replica set + kafka)."""
+"""Lifecycle for the stateful dependencies (mongo replica set + rabbitmq)."""
 
 from __future__ import annotations
 
@@ -114,13 +114,14 @@ def _probe_transaction(client: pymongo.MongoClient) -> None:
     client.drop_database("e2e_probe")
 
 
-def wait_for_kafka(timeout: float = 180.0) -> None:
-    """Wait until the broker accepts connections AND reports metadata.
+def wait_for_broker(timeout: float = 120.0) -> None:
+    """Wait until RabbitMQ accepts AMQP connections.
 
-    A bare TCP connect succeeds well before the broker can serve produce
-    requests, and auth's DeleteAccount fails hard if the produce fails.
+    A bare TCP connect succeeds before the broker will serve a channel, and
+    auth's account deletion fails hard if publishing fails -- so this waits for
+    the broker's own readiness check rather than just the open port.
     """
-    wait_for_port(config.KAFKA_PORT, timeout=timeout)
+    wait_for_port(config.RABBITMQ_PORT, timeout=timeout)
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
@@ -134,11 +135,10 @@ def wait_for_kafka(timeout: float = 180.0) -> None:
                 str(config.COMPOSE_FILE),
                 "exec",
                 "-T",
-                "kafka",
-                "/opt/kafka/bin/kafka-topics.sh",
-                "--bootstrap-server",
-                f"localhost:{config.KAFKA_PORT}",
-                "--list",
+                "rabbitmq",
+                "rabbitmq-diagnostics",
+                "-q",
+                "check_port_connectivity",
             ],
             text=True,
             capture_output=True,
@@ -146,10 +146,9 @@ def wait_for_kafka(timeout: float = 180.0) -> None:
         )
         if proc.returncode == 0:
             return
-        last = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or [""]
-        last = last[0]
+        last = ((proc.stderr or proc.stdout or "").strip().splitlines() or [""])[-1]
         time.sleep(2)
-    raise InfraError(f"kafka not ready within {timeout}s (last error: {last})")
+    raise InfraError(f"rabbitmq not ready within {timeout}s (last error: {last})")
 
 
 def reset_databases() -> None:

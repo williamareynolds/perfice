@@ -23,8 +23,8 @@ uv venv && uv pip install -e .
 .venv/bin/pytest -m characterization # just the surprising behaviours
 ```
 
-A cold run takes a couple of minutes: it starts a Mongo replica set and Kafka
-in Docker, compiles all four services, boots them, and then drops the service
+A cold run takes a couple of minutes: it starts a Mongo replica set and
+RabbitMQ in Docker, compiles all four services, boots them, and then drops the service
 databases between every test.
 
 `--keep-stack` leaves the containers running for faster iteration. Note that it
@@ -34,7 +34,7 @@ caches provider definitions at boot -- see `reloaded_integration` in
 
 ## How the stack is assembled
 
-`docker-compose.yml` runs **only** Mongo and Kafka. The services themselves are
+`docker-compose.yml` runs **only** Mongo and RabbitMQ. The services themselves are
 built from local source and run as host processes by `harness/services.py`,
 which keeps their logs available in `.logs/` when something fails.
 
@@ -86,6 +86,12 @@ Everything else that used to be marked this way has been fixed — see
 
 **`slow`** marks the stateful model, which is the only test that takes real
 time.
+
+If the model test fails with hypothesis's `FlakyStrategyDefinition`
+("inconsistent data generation"), suspect the example database before the code:
+`.hypothesis/` persists between runs, and an example recorded against different
+infrastructure can replay into a different draw sequence. `rm -rf .hypothesis`
+and re-run to tell the two apart.
 
 ## Behaviour that changed
 

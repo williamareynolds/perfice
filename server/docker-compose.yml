@@ -23,6 +23,9 @@ networks:
   perfice:
     driver: bridge
 
+volumes:
+  rabbitmq:
+
 services:
   auth:
     image: ghcr.io/p0lloc/perfice_auth:latest
@@ -33,7 +36,7 @@ services:
       HTTP_PORT: 8081
       MONGO_URL: mongodb://host.docker.internal:27017/?replicaSet=rs0
       JWT_SECRET: CHANGE_ME
-      KAFKA_URL: kafka:9092
+      RABBITMQ_URL: amqp://perfice:CHANGE_ME@rabbitmq:5672/%2f
       BACKEND_BASE_URL: https://backend.example.com
       APP_BASE_URL: https://app.example.com/new
       # MAILEROO_API_KEY unset: with no mail service, email confirmation is
@@ -42,7 +45,7 @@ services:
     networks:
       - perfice
     depends_on:
-      kafka:
+      rabbitmq:
         condition: service_healthy
     restart: unless-stopped
 
@@ -54,14 +57,14 @@ services:
       PORT: 8082
       MONGO_URL: mongodb://host.docker.internal:27017/?replicaSet=rs0
       AUTH_GRPC_URL: auth:5001
-      KAFKA_URL: kafka:9092
+      RABBITMQ_URL: amqp://perfice:CHANGE_ME@rabbitmq:5672/%2f
       RUST_LOG: info
     networks:
       - perfice
     depends_on:
       auth:
         condition: service_started
-      kafka:
+      rabbitmq:
         condition: service_healthy
     restart: unless-stopped
 
@@ -73,7 +76,7 @@ services:
       PORT: 8080
       MONGO_URL: mongodb://host.docker.internal:27017/?replicaSet=rs0
       AUTH_GRPC_URL: auth:5001
-      KAFKA_URL: kafka:9092
+      RABBITMQ_URL: amqp://perfice:CHANGE_ME@rabbitmq:5672/%2f
       # Where providers redirect a browser back to after authorization, so it
       # must be the public gateway origin rather than anything internal.
       CALLBACK_URL_BASE: https://backend.example.com
@@ -84,7 +87,7 @@ services:
     depends_on:
       auth:
         condition: service_started
-      kafka:
+      rabbitmq:
         condition: service_healthy
     restart: unless-stopped
 
@@ -110,36 +113,29 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  kafka:
-    image: apache/kafka:latest
-    container_name: kafka
+  # Carries the two cross-service events: user.deleted and
+  # user.timezone_changed. Queues and messages are durable, so an event
+  # published while sync or integration is down is waiting when it returns --
+  # which is what stops a deleted account's data from being left behind.
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    container_name: rabbitmq
     environment:
-      KAFKA_KRAFT_MODE: "true"
-      KAFKA_PROCESS_ROLES: "broker,controller"
-      KAFKA_NODE_ID: 1
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
-      KAFKA_NUM_PARTITIONS: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_LOG_RETENTION_MS: 60000
-      KAFKA_SEGMENT_MS: 60000
-      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 30000
+      RABBITMQ_DEFAULT_USER: perfice
+      RABBITMQ_DEFAULT_PASS: CHANGE_ME
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
     networks:
       - perfice
     healthcheck:
+      # check_running alone passes before the listener accepts connections.
       test:
         [
-          "CMD",
-          "/opt/kafka/bin/kafka-topics.sh",
-          "--bootstrap-server",
-          "localhost:9092",
-          "--list",
+          "CMD-SHELL",
+          "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity",
         ]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 30
       start_period: 15s
     restart: unless-stopped

@@ -43,7 +43,7 @@ a port can satisfy the tests on while being wrong in production. Worth knowing:
   retract what it already imported.
 - **The scheduler** (`scheduler.rs`) is one tokio task per integration, sleeping
   until its cron's next occurrence *in the user's timezone*. That is why a
-  `timezoneChange` event reschedules rather than being ignored: a daily job
+  `user.timezone_changed` event reschedules rather than being ignored: a daily job
   otherwise keeps firing against the day the user used to be in.
 - **Encryption** (`crypto.rs`) uses the same primitive as Go
   (XChaCha20-Poly1305 under `ENCRYPTION_KEY`) but its own encoding. Nothing
@@ -58,28 +58,23 @@ Two Go behaviours were kept deliberately rather than "fixed":
 - A five-field cron *is* now accepted (normalised to six). Go's scheduler
   rejects it, which leaves the integration silently never running.
 
-## Running the suite against Rust
-
-The harness builds and supervises whichever implementation each service is
-configured to use, so services can be migrated one at a time. The two
-implementations share a database, a Kafka topic and the `.proto`, so mixing
-them is expected rather than a special case.
+## Running the suite
 
 ```bash
-cd server/e2e
-
-PERFICE_E2E_IMPL_AUTH=rust .venv/bin/pytest    # one service on Rust
-PERFICE_E2E_IMPL=rust .venv/bin/pytest         # everything on Rust
-.venv/bin/pytest                               # all Go (default)
+cd server/e2e && uv venv && uv pip install -e .
+.venv/bin/pytest                 # all 247
+.venv/bin/pytest -m "not slow"   # skip the stateful model
+.venv/bin/pytest --keep-stack    # leave docker up between runs
 ```
 
-Each run prints the implementation matrix it used.
+The harness builds the workspace in release and supervises the four binaries as
+host processes; logs land in `server/e2e/.logs/`.
 
 ## Layout
 
 ```
 crates/
-  common/       shared: config, error mapping, identity guard, mongo, password, bytes
+  common/       shared: config, error mapping, identity guard, mongo, password, bytes, events
   proto/        tonic bindings generated from ../proto/auth.proto
   auth/         accounts, sessions, JWT, gRPC + HTTP
   gateway/      routing, CORS, bearer auth, request forwarding
@@ -101,7 +96,7 @@ fetch.rs      talking to providers: timezone, URL, credential
 scheduler.rs  one task per integration, cron in the user's timezone
 service.rs    integration lifecycle and the cascades on deletion
 http.rs       routes
-kafka.rs      userDeleted and timezoneChange
+events.rs     user.deleted and user.timezone_changed
 ```
 
 ## What compatibility actually means here
@@ -111,12 +106,25 @@ or cost parameters. Two things are fixed:
 
 1. **The JSON wire format**, because the Svelte client in `client/` consumes it
    and is not being rewritten. This is what the e2e suite pins.
-2. **Go interop for the services not yet ported**, only for as long as a mixed
-   stack is being run. Concretely: the `.proto` (shared verbatim) and the Kafka
-   topic name (`my-topic`, with the event name in the message key). Both can be
-   cleaned up once all four services are Rust.
+2. ~~Go interop for the services not yet ported.~~ Done: all four are Rust and
+   the Go implementation is deleted. The Kafka naming that existed only for
+   interop (`my-topic`, event name in the message key) is gone with it — events
+   now go over RabbitMQ, see `crates/common/src/events.rs`.
 
 Storage layout, hashing costs and internal naming are free to change.
+
+## Events
+
+Two cross-service events, both about a user, both published by auth: sync and
+integration consume `user.deleted` to purge, and integration consumes
+`user.timezone_changed` to reschedule pull jobs. One durable topic exchange,
+one durable queue per consumer; the topology and the reasoning live in
+`crates/common/src/events.rs`.
+
+Every service declares the *whole* topology at boot rather than just its own
+part, because a queue that does not exist yet silently discards messages — so a
+publisher outrunning a consumer's first boot would lose a deletion with nothing
+to show for it.
 
 ## Things that must not drift
 
@@ -141,6 +149,10 @@ data.
   `Allow-Methods: *` is invalid per spec, and tower-http panics at startup
   rather than at request time. The gateway enumerates the method list Fiber was
   defaulting to.
+- **A new event needs a queue binding.** `SUBSCRIPTIONS` in
+  `common::events` is the whole routing table. An event published with no
+  binding is discarded by the broker without error; a unit test asserts every
+  routing key has at least one consumer.
 - **Email normalisation is ASCII-only.** Folding with a full Unicode mapping is
   not a round trip (U+FB00 uppercases to "FF"), which made such accounts
   permanently unreachable. Round-trip safety is the requirement, not parity

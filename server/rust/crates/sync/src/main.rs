@@ -3,8 +3,8 @@
 //! Stores and relays end-to-end encrypted entity updates. Payloads are opaque
 //! ciphertext: this service has no key and never inspects them.
 
+mod events;
 mod http;
-mod kafka;
 mod model;
 mod service;
 
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let secret = InternalSecret::from_env();
     let port = config::require_port("PORT");
-    let kafka_url = config::require("KAFKA_URL");
+    let broker_url = config::require("RABBITMQ_URL");
     let auth_url = config::require("AUTH_GRPC_URL");
 
     let (client, db) = mongo::connect_client("sync").await;
@@ -41,9 +41,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn({
         let sync = sync.clone();
         async move {
-            if let Err(err) = kafka::consume(&kafka_url, "perfice-sync", sync).await {
-                tracing::error!(error = ?err, "kafka consumer stopped");
-            }
+            events::consume(&broker_url, sync).await;
         }
     });
 

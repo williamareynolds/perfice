@@ -20,4 +20,4 @@ Timezone lives here, not in sync — the integration scheduler fetches it over g
 
 Hand-wired in `Init()`. `JWT_SECRET` is shared between `SessionService` and `AuthService`. `MAILEROO_API_KEY` is optional — if unset, `mailService` stays nil and email (confirmation, password reset) is silently disabled; account confirmation flows will appear broken rather than error. Sentry is initialised mid-`Init`, so panics in `NewAuthApp` (e.g. Mongo unreachable — it `panic`s on connect and on ping) are never reported.
 
-User deletion fans out: auth publishes to Kafka, and sync/integration subscribe to purge their own data (`OnUserDeleted` callbacks). Adding a service that stores per-user data means adding a Kafka consumer, or that data leaks past account deletion.
+User deletion fans out: auth publishes `user.deleted` to RabbitMQ, and sync/integration consume it to purge their own data. Adding a service that stores per-user data means adding a queue binding in `crates/common/src/events.rs`, or that data leaks past account deletion. Auth also publishes `user.timezone_changed`, which integration uses to reschedule pull jobs.

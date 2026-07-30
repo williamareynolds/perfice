@@ -20,7 +20,7 @@ BUILD_DIR = E2E_DIR / ".build"
 LOG_DIR = E2E_DIR / ".logs"
 
 MONGO_PORT = 27117
-KAFKA_PORT = 19092
+RABBITMQ_PORT = 5772
 
 AUTH_GRPC_PORT = 15001
 AUTH_HTTP_PORT = 18081
@@ -31,7 +31,8 @@ GATEWAY_PORT = 13000
 # directConnection keeps the driver from resolving the replica-set topology,
 # which would otherwise advertise an address the host cannot always reach.
 MONGO_URL = f"mongodb://localhost:{MONGO_PORT}/?directConnection=true"
-KAFKA_URL = f"localhost:{KAFKA_PORT}"
+# The default vhost, percent-encoded as the AMQP URI scheme requires.
+RABBITMQ_URL = f"amqp://guest:guest@localhost:{RABBITMQ_PORT}/%2f"
 
 JWT_SECRET = "e2e-test-secret-do-not-use-in-prod"
 # XChaCha20-Poly1305 requires exactly 32 bytes.
@@ -97,7 +98,7 @@ def service_specs() -> list[ServiceSpec]:
     (they dial its gRPC port), and the gateway last."""
     common = {
         "MONGO_URL": MONGO_URL,
-        "KAFKA_URL": KAFKA_URL,
+        "RABBITMQ_URL": RABBITMQ_URL,
         "INTERNAL_SECRET": INTERNAL_SECRET,
     }
     return [

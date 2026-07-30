@@ -7,6 +7,7 @@
 pub mod bytes;
 pub mod config;
 pub mod error;
+pub mod events;
 pub mod identity;
 pub mod mongo;
 pub mod password;

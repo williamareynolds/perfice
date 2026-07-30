@@ -1,8 +1,8 @@
 # Backend E2E Suite
 
-Python/pytest black-box conformance suite in `server/e2e/`, built 2026-07-30 as the safety net for the planned **Rust rewrite of the Go backend**. 194 tests, ~3m36s cold. Full docs in `server/e2e/README.md`.
+Python/pytest black-box conformance suite in `server/e2e/`, built 2026-07-30 as the safety net for the **Rust rewrite of the Go backend**. That rewrite is done and Go is deleted; this suite is now the backend's specification. **247 tests, ~3m45s cold.** Full docs in `server/e2e/README.md`.
 
-It tests the HTTP surface only — no Go imports. Retargeting to Rust means editing `service_specs()` in `harness/config.py` and nothing else.
+It tests the HTTP surface only and imports no service code, which is what let the port proceed one service at a time.
 
 ## Running
 
@@ -13,11 +13,12 @@ cd server/e2e && uv venv && uv pip install -e .
 .venv/bin/pytest --keep-stack         # leave docker up between runs
 ```
 
-Needs Docker + Go toolchain + uv. `docker-compose.yml` here runs **only** Mongo and Kafka; the four Go services are compiled from local source and supervised as host processes by `harness/services.py`, logs in `.logs/`.
+Needs Docker + Rust toolchain + uv. `docker-compose.yml` here runs **only** Mongo and RabbitMQ; the four services are compiled from local source and supervised as host processes by `harness/services.py`, logs in `.logs/`.
 
 ## Harness invariants — break these and nothing boots
 
-- **Mongo must be a single-node replica set.** `SyncService.Push` uses a transaction; a standalone mongod fails every push. The container listens on the *same* port it publishes (27117) so one address works inside and outside Docker. Same trick for Kafka (19092).
+- **Mongo must be a single-node replica set.** Applying a sync update uses a transaction; a standalone mongod fails every push. The container listens on the *same* port it publishes (27117) so the replica-set member host works inside and outside Docker. RabbitMQ advertises nothing, so a plain 5772:5672 mapping is fine.
+- **`.hypothesis/` persists between runs.** A stored example replayed against changed infrastructure can fail as `FlakyStrategyDefinition` — not a real regression. `rm -rf .hypothesis` to tell them apart.
 - **`MAILEROO_API_KEY` must stay unset.** No mail service ⇒ auth skips email confirmation ⇒ the suite can register and log in without SMTP. Setting it breaks most tests.
 - Test isolation is "drop the three service databases", not per-write undo. Caveat: the integration service caches provider definitions in memory at boot, so tests that assert an *empty* provider list need `stack.restart("integration")` (the `reloaded_integration` fixture) — a DB drop alone does not clear the cache.
 - Ports are offset from production defaults (gateway 13000, auth 15001/18081, sync 18082, integration 18080) so a dev stack can run alongside.
@@ -26,7 +27,7 @@ Needs Docker + Go toolchain + uv. `docker-compose.yml` here runs **only** Mongo 
 
 Also note `INTERNAL_SECRET` is now mandatory: `harness/config.py` supplies it to every service, and a port that ignores it fails `TestBackendsRequireTheGatewaySecret`.
 
-**Updated 2026-07-30 (later)**: 247 tests, ~6m10s cold. `auth`, `gateway` and `sync` are ported to Rust and pass; only `integration` is still Go.
+**Updated 2026-07-30 (later)**: all four services are Rust and all 247 tests pass. Kafka was replaced by RabbitMQ in the same session.
 
 The integration service had no coverage at all for anything needing a third party, which would have let a rewrite pass the suite while silently dropping it. `harness/fake_provider.py` is now a real provider on port 19100 (token/data/history endpoints, bearer required on `/data`, every request recorded), and `tests/test_integration_provider.py` is 35 tests against it. Three paths in there are the ones a port passes by accident:
 
@@ -36,7 +37,7 @@ The integration service had no coverage at all for anything needing a third part
 
 ## The `characterization` marker (was 28 tests, now 3)
 
-Marks behaviour that is surprising or arguably a bug, pinned deliberately with a docstring explaining the Go code and the porting decision. `pytest -m characterization`. These are the decisions the rewrite must make consciously. The sharpest:
+Marks behaviour that is surprising or arguably a bug, pinned deliberately with a docstring. **The list below is historical** — it describes the Go implementation as it was when the suite was written, and all but three were fixed before the rewrite. `pytest -m characterization`. These are the decisions the rewrite must make consciously. The sharpest:
 
 - **A push from a user with only one session persists nothing** and returns `{"ack": null}` — `Push` returns early before writing when there are no other sessions. Data only starts being stored once a second device logs in.
 - **An access token still works after logout** (up to 15 min): authentication only verifies the JWT, never that the session row exists.
@@ -57,7 +58,7 @@ Already found a real bug: `sanitizeEmail` uses Go's `strings.ToLower` (per-rune 
 
 ## Contract details worth knowing before porting
 
-- Go marshals `[]byte` as base64, so `data`/`key`/`salt` are base64 strings on the wire. `harness/client.py` hides this.
+- Byte payloads are base64 on the wire, so `data`/`key`/`salt` are base64 strings. `harness/client.py` hides this.
 - `/pull` with no key set returns `{"key": null, "updates": []}` — the two nils serialise differently (`key` is a raw `[]byte`, `updates` goes through `util.SliceMapErr` which allocates an empty slice). Clients distinguish them.
 - Auth's own HTTP path space is `/register`, `/login`, …; the `/auth` prefix exists only in the gateway's route table.
 - Integration update payloads are keyed by the **client's form question id**, not the provider's field name (`extractedData[questionId] = value`).

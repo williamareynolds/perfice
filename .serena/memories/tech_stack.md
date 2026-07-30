@@ -18,7 +18,8 @@
 
 ## Server (`server/`)
 - **Rust**, edition 2024, one Cargo workspace at `server/rust`. Four binaries — `auth`, `gateway`, `sync`, `integration` — plus `common` (config, error mapping, identity guard, mongo, password, random) and `proto` (tonic bindings). `unsafe_code = "forbid"` workspace-wide.
-- axum 0.8, tokio 1.53, tonic 0.14, mongodb 3.8, jsonwebtoken 11 (`rust_crypto` feature — the default provider panics at runtime), argon2 0.5, reqwest 0.13 (rustls), chacha20poly1305, rdkafka (cmake-build).
-- MongoDB (must be a replica set), Kafka (KRaft mode), gRPC + protobuf (auth is exposed over gRPC to the others). No Sentry; logging is `tracing` and `RUST_LOG`.
+- axum 0.8, tokio 1.53, tonic 0.14, mongodb 3.8, jsonwebtoken 11 (`rust_crypto` feature — the default provider panics at runtime), argon2 0.5, reqwest 0.13 (rustls), chacha20poly1305, lapin 4 (AMQP).
+- MongoDB (must be a replica set), RabbitMQ, gRPC + protobuf (auth is exposed over gRPC to the others). No Sentry; logging is `tracing` and `RUST_LOG`.
+- **Kafka was replaced by RabbitMQ 2026-07-30** — it was disproportionate operational weight for two events. Topology lives in `crates/common/src/events.rs`: one durable topic exchange `perfice.events`, one durable queue per consumer, routing keys `user.deleted` and `user.timezone_changed`. Every service declares the *whole* topology at boot, because a queue that does not exist yet silently discards messages.
 - **The Go implementation was deleted 2026-07-30** after the Rust port passed the full e2e suite. `server/proto/auth.proto` survives as the gRPC contract; the generated `*.pb.go` did not. See `mem:server/rust_port`.
 - One `server/Dockerfile` builds all four (`--build-arg SERVICE=<name>`, context `server/`); `build.sh` / `push.sh` drive it. `server/docker-compose.yml` runs the published `ghcr.io/p0lloc/perfice_*` images.

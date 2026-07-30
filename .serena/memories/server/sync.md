@@ -26,4 +26,4 @@ What the server *does* see: entity ids, entity type, version, timestamps, user i
 
 This list must stay in sync with the client's Dexie tables. Adding a synced entity type on the client requires adding the string here too, or its updates are rejected by `SyncController`. Note `analyticSettings` (singular "analytic") — the client collection is `analyticsSettings`; do not "fix" one side alone. `localIntegrations`, `updateQueue` and `indices` are deliberately absent: local-only.
 
-Kafka consumer purges sync updates, key verifications and salts on user deletion.
+The `user.deleted` consumer purges sync updates, key verifications and salts on user deletion.

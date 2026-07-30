@@ -15,7 +15,7 @@ import pytest
 from harness import config
 from harness.client import Api
 from harness.factories import login_device, new_user_with_devices, register_user
-from harness.infra import compose_down, compose_up, init_replica_set, mongo_client, reset_databases, wait_for_kafka
+from harness.infra import compose_down, compose_up, init_replica_set, mongo_client, reset_databases, wait_for_broker
 from harness.services import Stack
 
 
@@ -41,7 +41,7 @@ def _infra(request):
         return
     compose_up()
     init_replica_set()
-    wait_for_kafka()
+    wait_for_broker()
     yield
     if not request.config.getoption("--keep-stack"):
         compose_down()

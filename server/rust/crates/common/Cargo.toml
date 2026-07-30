@@ -10,6 +10,7 @@ argon2 = { version = "0.5.3", features = ["std"] }
 axum = "0.8.9"
 base64 = "0.23.0"
 futures = "0.3.33"
+lapin = "4.10.0"
 mongodb = "3.8.0"
 perfice-proto = { version = "0.1.0", path = "../proto" }
 rand = "0.10.2"

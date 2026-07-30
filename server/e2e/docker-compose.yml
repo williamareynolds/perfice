@@ -2,19 +2,19 @@
 #
 # Deliberately does NOT use ../docker-compose.yml: that one pulls published
 # ghcr images and has placeholder config. Here we only run the stateful
-# dependencies; the Go services themselves are built from local source and run
-# as host processes by harness/services.py so their logs can be captured.
+# dependencies; the services themselves are built from local source and run as
+# host processes by harness/services.py so their logs can be captured.
 #
-# Port choices matter. Both mongo and kafka listen on the SAME port inside the
-# container as they are published on, so a single "localhost:<port>" address is
-# valid both inside the container and from the host. Without that, the replica
-# set member host and the kafka advertised listener would be unreachable from
-# one side or the other.
+# Mongo listens on the SAME port inside the container as it is published on, so
+# a single "localhost:<port>" address is valid both inside the container and
+# from the host. Without that the replica set member host would be unreachable
+# from one side or the other. RabbitMQ advertises nothing, so a plain port
+# mapping is enough for it.
 
 services:
   mongo:
     image: mongo:7
-    # Transactions (sync_service.go uses WithTransaction) require a replica set.
+    # Applying a sync update uses a transaction, which needs a replica set.
     command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27117"]
     ports:
       - "27117:27117"
@@ -27,28 +27,14 @@ services:
       retries: 45
       start_period: 5s
 
-  kafka:
-    image: apache/kafka:3.9.0
+  rabbitmq:
+    image: rabbitmq:4-alpine
     ports:
-      - "19092:19092"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: "broker,controller"
-      KAFKA_LISTENERS: "PLAINTEXT://:19092,CONTROLLER://:19093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:19092"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:19093"
-      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_NUM_PARTITIONS: 1
+      - "5772:5672"
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --list || exit 1"]
+      # check_running alone passes before the listener accepts connections.
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity"]
       interval: 3s
       timeout: 10s
-      retries: 45
+      retries: 30
       start_period: 10s

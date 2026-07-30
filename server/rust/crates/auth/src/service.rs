@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
-use crate::kafka::KafkaProducer;
+use perfice_common::events;
+
 use crate::model::{DEFAULT_TIMEZONE, Feedback, User};
 use crate::session::SessionService;
 
@@ -37,7 +38,7 @@ pub struct AuthService {
     users: Collection<User>,
     feedback: Collection<Feedback>,
     sessions: SessionService,
-    kafka: KafkaProducer,
+    events: events::Publisher,
     /// Mirrors Go's `cachedTimezones`. The integration scheduler asks for these
     /// on every reschedule, so they are worth not hitting Mongo for.
     timezone_cache: Arc<RwLock<HashMap<String, String>>>,
@@ -51,7 +52,7 @@ impl AuthService {
         users: Collection<User>,
         feedback: Collection<Feedback>,
         sessions: SessionService,
-        kafka: KafkaProducer,
+        events: events::Publisher,
     ) -> anyhow::Result<Self> {
         let dummy_password_hash = perfice_common::password::hash("perfice-login-timing-equaliser")
             .context("failed to build the login timing equaliser")?;
@@ -60,7 +61,7 @@ impl AuthService {
             users,
             feedback,
             sessions,
-            kafka,
+            events,
             timezone_cache: Arc::new(RwLock::new(HashMap::new())),
             dummy_password_hash: Arc::new(dummy_password_hash),
         })
@@ -149,7 +150,7 @@ impl AuthService {
             .await?;
 
         self.cache_timezone(user_id, timezone);
-        self.kafka.notify_timezone_change(user_id, timezone).await
+        self.events.timezone_changed(user_id, timezone).await
     }
 
     pub async fn delete_user(&self, user_id: &str) -> anyhow::Result<()> {
@@ -158,7 +159,7 @@ impl AuthService {
         // Ordering matters: sync and integration purge their own per-user data
         // when they see this, and the sessions below are what stop the deleted
         // user's tokens from continuing to authenticate.
-        self.kafka.notify_user_deleted(user_id).await?;
+        self.events.user_deleted(user_id).await?;
         self.sessions.on_user_deleted(user_id).await?;
 
         self.timezone_cache

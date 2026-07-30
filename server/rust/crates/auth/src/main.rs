@@ -6,19 +6,17 @@
 
 mod grpc;
 mod http;
-mod kafka;
 mod model;
 mod service;
 mod session;
 mod validation;
 
 use perfice_common::identity::InternalSecret;
-use perfice_common::{config, mongo, telemetry};
+use perfice_common::{config, events, mongo, telemetry};
 use std::net::SocketAddr;
 
 use crate::grpc::UserGrpc;
 use crate::http::AppState;
-use crate::kafka::KafkaProducer;
 use crate::service::AuthService;
 use crate::session::SessionService;
 
@@ -32,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let jwt_secret = config::require("JWT_SECRET");
     let grpc_port = config::require_port("GRPC_PORT");
     let http_port = config::require_port("HTTP_PORT");
-    let kafka_url = config::require("KAFKA_URL");
+    let broker_url = config::require("RABBITMQ_URL");
 
     let db = mongo::connect("auth").await;
     let sessions = SessionService::new(db.collection("sessions"), &jwt_secret);
@@ -40,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
         db.collection("users"),
         db.collection("feedback"),
         sessions.clone(),
-        KafkaProducer::new(&kafka_url)?,
+        events::Publisher::connect(&broker_url).await?,
     )?;
 
     // MAILEROO_API_KEY is intentionally not wired up: no mail service means the

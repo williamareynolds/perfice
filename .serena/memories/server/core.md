@@ -23,7 +23,7 @@ One workspace, so a change to `common` or `proto` rebuilds every dependent servi
 - **Shape**: each crate is a `main.rs` that reads config, wires services and serves; behaviour lives in sibling modules. `integration` is the only one large enough to need a map — see its README section.
 - **HTTP**: axum 0.8 everywhere, handlers returning `ApiResult<impl IntoResponse>`.
 - **Config**: env vars only, no config files, no `.env` loading. `perfice_common::config::require` **panics at boot** on a missing variable, so a misconfigured service never comes up looking healthy.
-- **User deletion** fans out over Kafka: auth publishes, sync and integration consume and purge. Any new per-user store needs its own consumer or data outlives the account.
+- **User deletion** fans out over RabbitMQ: auth publishes `user.deleted`, sync and integration consume and purge. Any new per-user store needs its own queue binding in `crates/common/src/events.rs`, or data outlives the account. `user.timezone_changed` is the other event; integration reschedules pull jobs on it.
 - **Mongo**: one database per service (`auth`, `sync`, `integration`), never shared. Must be a replica set — sync uses a transaction. Provider OAuth tokens and fetched payloads are encrypted at rest with `ENCRYPTION_KEY` (XChaCha20-Poly1305).
 
 ## Testing

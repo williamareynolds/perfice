@@ -11,9 +11,9 @@
 mod auth;
 mod crypto;
 mod defs;
+mod events;
 mod fetch;
 mod http;
-mod kafka;
 mod model;
 mod oauth;
 mod paths;
@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
 
     let secret = InternalSecret::from_env();
     let port = config::require_port("PORT");
-    let kafka_url = config::require("KAFKA_URL");
+    let broker_url = config::require("RABBITMQ_URL");
     let auth_url = config::require("AUTH_GRPC_URL");
     // The public origin providers redirect back to. It has to be reachable from
     // a browser, so it cannot be derived from the listening address.
@@ -104,9 +104,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn({
         let service = Arc::clone(&service);
         async move {
-            if let Err(err) = kafka::consume(&kafka_url, "perfice-integration", service).await {
-                tracing::error!(error = ?err, "kafka consumer stopped");
-            }
+            events::consume(&broker_url, service).await;
         }
     });
 

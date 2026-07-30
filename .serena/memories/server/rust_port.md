@@ -6,7 +6,7 @@ Done 2026-07-30. Cargo workspace at `server/rust/`, axum + tokio. The e2e suite 
 
 ## How it was done, and why that mattered
 
-One service at a time, validated against the suite with a **mixed stack** after each step. That worked because both implementations shared the database, the Kafka topic (`my-topic`, event name in the message key) and the `.proto`. The harness selected an implementation per service via `PERFICE_E2E_IMPL_<NAME>`; that machinery is gone now that Go is.
+One service at a time, validated against the suite with a **mixed stack** after each step. That worked because both implementations shared the database, the Kafka topic (`my-topic`, event name in the message key) and the `.proto`. (Kafka has since been replaced by RabbitMQ — see `mem:tech_stack`.) The harness selected an implementation per service via `PERFICE_E2E_IMPL_<NAME>`; that machinery is gone now that Go is.
 
 The order was auth -> gateway -> sync -> integration, cheapest-to-verify first.
 
