@@ -21,25 +21,23 @@ routes are inert in Go too; `http::mail_disabled` answers them with the same
 
 ### Before porting `integration`
 
-The e2e suite covers only part of that service, so **passing the suite would
-not mean it is ported**. Covered: provider definitions loaded at boot,
-user-integration CRUD, webhook ingestion and field extraction, identifier-keyed
-idempotency, updates list/ack, per-user scoping, auth gating.
+The gap that made this service unsafe to port has been closed:
+`tests/test_integration_provider.py` now covers OAuth, scheduled pulls,
+historical backfill and at-rest encryption, driven against a fake provider in
+`harness/fake_provider.py`. 18 tests, all passing against Go, so they are a
+real baseline rather than a guess at intended behaviour.
 
-Covered by no test at all:
+Still uncovered, and worth checking by hand during the port:
 
-- OAuth2 authorization-code and refresh flows
-- The scheduler — one job per user-integration, in the user's timezone (fetched
-  over gRPC), with cron jitter
-- Historical backfill
-- At-rest encryption of OAuth tokens and payloads (`encrypt:"true"` +
-  `mongoutil`, XChaCha20-Poly1305 keyed by `ENCRYPTION_KEY`)
-- Integration logs
+- Token **refresh** when an access token expires mid-fetch. The fake provider
+  can issue short-lived tokens (`state.token_expires_in`) so this is cheap to
+  add.
+- PKCE. The seeded provider sets `pkce: false`; the flow supports it.
+- Integration logs (`collection/integration_log.go`), which only activate when
+  an entity defines `logSettings`.
 
-Porting only what the suite exercises would produce something that looks
-finished and silently is not. Either extend the suite first, or port these with
-the Go source open alongside. Crates worth reaching for: `oauth2`,
-`tokio-cron-scheduler`, `serde_json_path`, `chacha20poly1305`.
+Crates worth reaching for: `oauth2`, `tokio-cron-scheduler`, `serde_json_path`,
+`chacha20poly1305`.
 
 ## Running the suite against Rust
 
