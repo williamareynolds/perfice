@@ -48,31 +48,52 @@ crates/
   integration/  (placeholder)
 ```
 
+## What compatibility actually means here
+
+There is **no existing database**, so nothing has to match Go's stored shapes
+or cost parameters. Two things are fixed:
+
+1. **The JSON wire format**, because the Svelte client in `client/` consumes it
+   and is not being rewritten. This is what the e2e suite pins.
+2. **Go interop for the services not yet ported**, only for as long as a mixed
+   stack is being run. Concretely: the `.proto` (shared verbatim) and the Kafka
+   topic name (`my-topic`, with the event name in the message key). Both can be
+   cleaned up once all four services are Rust.
+
+Storage layout, hashing costs and internal naming are free to change.
+
 ## Things that must not drift
 
-These are the places where a plausible-looking Rust idiom silently breaks
-compatibility with the Go implementation or the stored data.
+Places where a plausible-looking Rust idiom silently breaks the client or the
+data.
 
-- **Password hashing.** Existing rows were written by Go's
-  `matthewhartstonge/argon2` `DefaultConfig`: argon2id, m=65536, t=3, p=4.
-  `Argon2::default()` in Rust is m=19456, t=2, p=1. Verification reads its
-  parameters from the PHC string so it is safe either way, but *hashing* must
-  pin Go's values or a rollback could not read what Rust wrote.
-  `common::password` does this and tests both directions against a real
-  Go-produced hash.
-- **Byte fields.** Go's `[]byte` is base64 in JSON and binary in BSON. Rust's
-  `Vec<u8>` is an integer array in both by default. Use
-  `common::bytes::base64_bytes` on wire DTOs and `serde_bytes` on stored
-  documents.
-- **Release builds only.** argon2 at 64 MiB / 3 passes is punishingly slow
-  unoptimized — a single login takes seconds and the suite looks hung. The
-  harness always builds `--release`.
+- **Byte fields have two shapes.** JSON carries them as base64 strings (the
+  client decodes them as such); BSON stores them as binary. Rust's `Vec<u8>` is
+  an integer array in *both* by default. Use `common::bytes::base64_bytes` on
+  wire DTOs and `serde_bytes` on stored documents. This fails silently — data
+  round-trips internally and is unreadable to the client.
+- **Release builds only.** argon2 is slow enough unoptimized that a
+  login-heavy test run looks hung rather than slow. The harness always builds
+  `--release`.
 - **`INTERNAL_SECRET` is mandatory.** Every service must refuse to start
   without it and reject requests lacking `X-Internal-Secret`, or
   `TestBackendsRequireTheGatewaySecret` fails.
 - **Error mapping.** `common::ApiError` is the only path to a response status.
   Validation is 400, missing/revoked credentials 401, unknown routes 404, and
   anything else is logged and returned as a bare 500 with no body.
-- **Email normalisation is ASCII-only.** Go originally used a Unicode mapping
-  that was not a round trip. Both implementations share a users collection, so
-  they must canonicalise identically.
+- **Email normalisation is ASCII-only.** Folding with a full Unicode mapping is
+  not a round trip (U+FB00 uppercases to "FF"), which made such accounts
+  permanently unreachable. Round-trip safety is the requirement, not parity
+  with any particular implementation.
+
+## Password hashing
+
+argon2id at OWASP's interactive recommendation: m=19456 KiB, t=2, p=1. Go used
+RFC 9106's second option (64 MiB, t=3, p=4) — a fine choice, but ~5x the work
+and the dominant cost in a login-heavy suite.
+
+Parameters are stated explicitly in `common::password` rather than relying on
+`Argon2::default()`, so a change to the crate's defaults is a deliberate
+decision rather than a silent change to every new hash. Output is a standard
+PHC string, so costs can be raised later without invalidating existing rows —
+verification reads parameters from the hash, which is covered by a test.

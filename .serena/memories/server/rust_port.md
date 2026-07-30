@@ -21,9 +21,18 @@ Not ported inside auth: mail-dependent flows (email confirmation, password reset
 
 The proto has no `package` declaration, so the generated module is `_`: `tonic::include_proto!("_")`.
 
+## What compatibility actually means
+
+Confirmed by the user 2026-07-30: **there is no existing database.** Nothing has to match Go's stored shapes or cost parameters. Only two things are fixed:
+
+1. **The JSON wire format** — the Svelte client in `client/` consumes it and is not being rewritten. This is what the e2e suite pins.
+2. **Go interop for services not yet ported**, and only while a mixed stack is run: the shared `.proto` and the Kafka topic name (`my-topic`, event name in the message key). Both can be cleaned up once all four services are Rust.
+
+Storage layout, hashing costs and internal naming are free to change.
+
 ## Compatibility traps (each one cost a debugging cycle or would have)
 
-- **argon2 params.** Existing hashes are Go's `DefaultConfig`: argon2id m=65536, t=3, p=4. Rust's `Argon2::default()` is m=19456, t=2, p=1. *Verification* reads params from the PHC string so it works either way; *hashing* must pin Go's values or a rollback can't read Rust's output. `common::password` tests both directions against a real Go-produced hash.
+- **argon2 params are now OWASP interactive** (m=19456, t=2, p=1), not Go's RFC 9106 second option (m=65536, t=3, p=4). The pinning existed only for hash interop and was the dominant cost in the suite: dropping it took the common-crate tests from 18.4s to 2.2s. Parameters are stated explicitly rather than using `Argon2::default()` so a crate-default change is a deliberate decision. Verification stays parameter-agnostic (reads the PHC string), so costs can be raised later without invalidating rows — covered by a test.
 - **Release builds are mandatory.** argon2 at 64 MiB/3 passes unoptimized takes seconds per login — the suite appears to hang rather than fail. The harness always runs `cargo build --release`.
 - **Byte fields have two shapes.** Go's `[]byte` is base64 in JSON and binary in BSON; Rust's `Vec<u8>` is an integer array in both by default. Use `common::bytes::base64_bytes` on wire DTOs, `serde_bytes` on stored documents. Getting this wrong is silent — data round-trips within one implementation and is unreadable to the other.
 - **jsonwebtoken v11 needs an explicit crypto provider feature** (`rust_crypto`), otherwise it panics at first use with "Could not automatically determine the process-level CryptoProvider".

@@ -1,25 +1,26 @@
-//! Password hashing, wire-compatible with the Go implementation.
+//! Password hashing.
 //!
-//! Existing accounts were hashed by `github.com/matthewhartstonge/argon2`'s
-//! `DefaultConfig`, so both directions have to keep working: Rust must verify
-//! Go-produced hashes (proven by the tests below), and hashes Rust produces
-//! must stay readable by Go in case of a rollback.
+//! There is no existing database to stay compatible with, so this does not
+//! reproduce Go's cost parameters. Go used RFC 9106's *second* recommendation
+//! (64 MiB, t=3, p=4), which is a fine choice but roughly five times the work
+//! of the current OWASP recommendation for interactive logins -- enough to be
+//! the dominant cost in a login-heavy test suite.
 //!
-//! Verification reads its parameters from the PHC string, so it is
-//! parameter-agnostic. Hashing is not, which is why [`hasher`] pins Go's
-//! settings explicitly instead of using `Argon2::default()` -- the Rust crate's
-//! defaults are m=19456, t=2, p=1 and would silently produce hashes with
-//! different cost parameters.
+//! These are the `argon2` crate's defaults, stated explicitly so that a future
+//! change to the crate's idea of "default" is a deliberate decision here rather
+//! than a silent change to every stored hash.
+//!
+//! Output is a standard PHC string, so the parameters live alongside the hash
+//! and can be raised later without invalidating existing rows: verification
+//! reads them from the string rather than from this module.
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 
-/// Go's `argon2.DefaultConfig()` == `MemoryConstrainedDefaults()`, i.e. the
-/// second RFC 9106 recommendation: argon2id, t=3, p=4, m=2^16 KiB (64 MiB),
-/// 128-bit salt, 256-bit tag.
-const MEMORY_COST_KIB: u32 = 65536;
-const TIME_COST: u32 = 3;
-const PARALLELISM: u32 = 4;
+/// OWASP's argon2id recommendation for interactive use: 19 MiB, 2 passes.
+const MEMORY_COST_KIB: u32 = 19456;
+const TIME_COST: u32 = 2;
+const PARALLELISM: u32 = 1;
 const OUTPUT_LEN: usize = 32;
 
 fn hasher() -> Argon2<'static> {
@@ -58,21 +59,24 @@ pub fn verify(password: &str, encoded: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Produced by Go's `argon2.DefaultConfig().HashEncoded(...)`.
-    const GO_HASH: &str = "$argon2id$v=19$m=65536,t=3,p=4$2g558KZUS9EaJKB94MALrw$z4HqgRT9fvc7tS/maH4z5rOGABZnL+qk5Jn2FKQAwfE";
-    const GO_PASSWORD: &str = "correct-horse-battery-staple";
+    /// A hash produced with different cost parameters -- here Go's old
+    /// settings. Nothing in the deployment produces these any more, but
+    /// verification must stay parameter-agnostic so the costs above can be
+    /// raised later without locking anyone out.
+    const FOREIGN_PARAMS_HASH: &str = "$argon2id$v=19$m=65536,t=3,p=4$2g558KZUS9EaJKB94MALrw$z4HqgRT9fvc7tS/maH4z5rOGABZnL+qk5Jn2FKQAwfE";
+    const FOREIGN_PARAMS_PASSWORD: &str = "correct-horse-battery-staple";
 
     #[test]
-    fn verifies_a_hash_produced_by_the_go_implementation() {
+    fn verifies_hashes_written_with_other_cost_parameters() {
         assert!(
-            verify(GO_PASSWORD, GO_HASH),
-            "existing Go-hashed passwords must keep working"
+            verify(FOREIGN_PARAMS_PASSWORD, FOREIGN_PARAMS_HASH),
+            "verification must read parameters from the PHC string"
         );
     }
 
     #[test]
     fn rejects_the_wrong_password() {
-        assert!(!verify("wrong", GO_HASH));
+        assert!(!verify("wrong", FOREIGN_PARAMS_HASH));
     }
 
     #[test]
@@ -83,11 +87,10 @@ mod tests {
     }
 
     #[test]
-    fn emits_the_same_parameters_go_would() {
-        // A rollback to Go must still be able to read what Rust wrote.
+    fn emits_the_configured_parameters() {
         let encoded = hash("whatever").unwrap();
         assert!(
-            encoded.starts_with("$argon2id$v=19$m=65536,t=3,p=4$"),
+            encoded.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
             "unexpected parameters: {encoded}"
         );
     }
