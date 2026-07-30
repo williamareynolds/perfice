@@ -11,13 +11,35 @@ service is only considered done when the suite passes against it.
 | `auth` | **Ported.** Passes the full suite. |
 | `gateway` | **Ported.** Passes the full suite. |
 | `sync` | **Ported.** Passes the full suite, including the stateful model. |
-| `integration` | Not started. |
+| `integration` | Not started. See the warning below before porting it. |
 
 Not yet ported within auth: the mail-dependent flows (email confirmation,
 password reset). No mail service is configured in any environment, so those
 routes are inert in Go too; `http::mail_disabled` answers them with the same
 400 Go produces rather than a 404. Porting them means adding the
 `accountTokens` collection and a Maileroo client.
+
+### Before porting `integration`
+
+The e2e suite covers only part of that service, so **passing the suite would
+not mean it is ported**. Covered: provider definitions loaded at boot,
+user-integration CRUD, webhook ingestion and field extraction, identifier-keyed
+idempotency, updates list/ack, per-user scoping, auth gating.
+
+Covered by no test at all:
+
+- OAuth2 authorization-code and refresh flows
+- The scheduler — one job per user-integration, in the user's timezone (fetched
+  over gRPC), with cron jitter
+- Historical backfill
+- At-rest encryption of OAuth tokens and payloads (`encrypt:"true"` +
+  `mongoutil`, XChaCha20-Poly1305 keyed by `ENCRYPTION_KEY`)
+- Integration logs
+
+Porting only what the suite exercises would produce something that looks
+finished and silently is not. Either extend the suite first, or port these with
+the Go source open alongside. Crates worth reaching for: `oauth2`,
+`tokio-cron-scheduler`, `serde_json_path`, `chacha20poly1305`.
 
 ## Running the suite against Rust
 

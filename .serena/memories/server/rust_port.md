@@ -6,8 +6,27 @@ Started 2026-07-30. Cargo workspace at `server/rust/`, axum + tokio. The e2e sui
 
 | Service | State |
 |---|---|
-| `auth` | **Ported and validated** — full 212-test suite passes with `PERFICE_E2E_IMPL_AUTH=rust` |
-| `sync`, `gateway`, `integration` | Placeholder crates only; still Go |
+| `auth` | **Ported and validated** |
+| `gateway` | **Ported and validated** |
+| `sync` | **Ported and validated** — including the stateful model test |
+| `integration` | Placeholder crate only; still Go |
+
+All 212 tests pass with auth+gateway+sync on Rust and integration on Go.
+
+## Integration: what a port actually involves
+
+The e2e suite covers only part of this service, so "passes the suite" is **not** the same as "ported" here. Covered: provider definition loading at boot, user-integration CRUD, webhook ingestion with field extraction, identifier-keyed idempotency, updates list/ack, per-user scoping, auth gating.
+
+**Not covered by any test** — porting these blind is the real risk:
+- OAuth2 authorization-code and refresh flows (`internal/auth/oauth.go`, `service/auth.go`)
+- The gocron scheduler: one job per user-integration, scheduled in the user's timezone fetched over gRPC, with cron jitter (`service/scheduler.go`)
+- Historical backfill (`FetchHistorical`)
+- At-rest encryption of OAuth tokens and payloads via the `encrypt:"true"` bson tag and `mongoutil` (XChaCha20-Poly1305, key from `ENCRYPTION_KEY` read once at package init)
+- Integration logs (`collection/integration_log.go`)
+
+A port that satisfies the suite while dropping these would look finished and would not be. Either extend the suite first, or port them with the Go source open alongside.
+
+Rust crate equivalents to reach for: `oauth2` for the flows, `tokio-cron-scheduler` for gocron, `serde_json_path` or `jsonpath-rust` for the `$.field` extraction in `service/path_aggregators.go`, `chacha20poly1305` for the at-rest encryption.
 
 Not ported inside auth: mail-dependent flows (email confirmation, password reset). No mail service is configured anywhere, so those routes are inert in Go too; `http::mail_disabled` answers them with the same 400 rather than 404, keeping observable behaviour identical.
 
