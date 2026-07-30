@@ -21,20 +21,29 @@ routes are inert in Go too; `http::mail_disabled` answers them with the same
 
 ### Before porting `integration`
 
-The gap that made this service unsafe to port has been closed:
-`tests/test_integration_provider.py` now covers OAuth, scheduled pulls,
-historical backfill and at-rest encryption, driven against a fake provider in
-`harness/fake_provider.py`. 18 tests, all passing against Go, so they are a
-real baseline rather than a guess at intended behaviour.
+The gap that made this service unsafe to port has been closed.
+`tests/test_integration_provider.py` covers OAuth (including PKCE), token
+refresh, scheduled pulls, historical backfill, fetched-entity logs and at-rest
+encryption, driven against a fake provider in `harness/fake_provider.py`. 35
+tests, all passing against Go, so they are a real baseline rather than a guess
+at intended behaviour.
 
-Still uncovered, and worth checking by hand during the port:
+Three of those areas are worth reading before writing the Rust, because they
+are the ones a port passes by accident and fails in production:
 
-- Token **refresh** when an access token expires mid-fetch. The fake provider
-  can issue short-lived tokens (`state.token_expires_in`) so this is cheap to
-  add.
-- PKCE. The seeded provider sets `pkce: false`; the flow supports it.
-- Integration logs (`collection/integration_log.go`), which only activate when
-  an entity defines `logSettings`.
+- **Token refresh.** A refreshed token must be *written back*
+  (`service/auth.go:handleTokenRefresh`). The suite detects a missing write-back
+  as "the refreshes never stop", since credentials are re-read from Mongo on
+  every fetch. Note also the eviction rule: after
+  `maxTokenRefreshTries` consecutive failures the credentials are deleted, which
+  is what returns the user to an unauthenticated state.
+- **PKCE.** The verifier presented at the token endpoint must be the preimage of
+  the challenge sent at authorization time, per `state`. Generating a fresh
+  verifier for the exchange satisfies every other assertion.
+- **Fetched-entity logs.** Only active when an entity sets both `multiple` and
+  `logSettings`. They exist so an item the provider *stops* returning can be
+  told apart from one it never returned; the vanished item's update is blanked
+  (`data: null`), not deleted, so the client can retract it.
 
 Crates worth reaching for: `oauth2`, `tokio-cron-scheduler`, `serde_json_path`,
 `chacha20poly1305`.

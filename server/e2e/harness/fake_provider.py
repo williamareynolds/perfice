@@ -49,6 +49,19 @@ class RecordedRequest:
             return value[len("Bearer ") :]
         return None
 
+    @property
+    def form(self) -> dict[str, list[str]]:
+        """The body parsed as a form post -- how token requests are submitted."""
+        return parse_qs(self.body)
+
+    def form_value(self, key: str) -> str | None:
+        values = self.form.get(key)
+        return values[0] if values else None
+
+    @property
+    def grant_type(self) -> str | None:
+        return self.form_value("grant_type")
+
 
 @dataclass
 class ProviderState:
@@ -71,6 +84,10 @@ class ProviderState:
     tokens_issued: int = 0
     # When set, /data answers this status instead of a payload.
     data_status: int | None = None
+    # When set, /oauth/token answers this status instead of issuing a token.
+    # Setting it after the initial code exchange makes refresh fail, which is
+    # what drives the credential-eviction path.
+    token_status: int | None = None
 
     def record(self, request: RecordedRequest) -> None:
         with self.lock:
@@ -85,6 +102,7 @@ class ProviderState:
             self.requests.clear()
         self.tokens_issued = 0
         self.data_status = None
+        self.token_status = None
         self.token_expires_in = 3600
 
 
@@ -122,6 +140,13 @@ class _Handler(BaseHTTPRequestHandler):
         state = type(self).state
 
         if request.path == "/oauth/token":
+            if state.token_status is not None:
+                # The shape a real provider uses for a rejected grant, so the
+                # client recognises it as an OAuth error rather than transport
+                # noise.
+                self._json(state.token_status, {"error": "invalid_grant"})
+                return
+
             state.tokens_issued += 1
             self._json(
                 200,

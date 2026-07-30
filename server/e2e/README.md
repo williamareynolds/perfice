@@ -64,8 +64,10 @@ published ghcr images and its config values are placeholders.
 | `tests/test_sync_model.py` | stateful model of the sync protocol (hypothesis) |
 | `tests/test_gateway.py` | routing, CORS, and the identity trust boundary |
 | `tests/test_integration_service.py` | provider definitions, webhooks, update delivery |
+| `tests/test_integration_provider.py` | OAuth + PKCE, token refresh, scheduled pulls, backfill, entity logs, at-rest encryption |
 | `tests/test_properties.py` | property-based invariants (hypothesis) |
 | `harness/` | config, infra lifecycle, service supervisor, API client, strategies |
+| `harness/fake_provider.py` | a stand-in third-party provider, so the paths above are reachable at all |
 
 ## The two markers
 

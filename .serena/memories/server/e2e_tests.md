@@ -8,7 +8,7 @@ It tests the HTTP surface only — no Go imports. Retargeting to Rust means edit
 
 ```bash
 cd server/e2e && uv venv && uv pip install -e .
-.venv/bin/pytest                      # all 194
+.venv/bin/pytest                      # all 247
 .venv/bin/pytest -m "not slow"        # skips the stateful model
 .venv/bin/pytest --keep-stack         # leave docker up between runs
 ```
@@ -25,6 +25,14 @@ Needs Docker + Go toolchain + uv. `docker-compose.yml` here runs **only** Mongo 
 **Updated 2026-07-30**: the backend was then hardened using this suite, so the tests now encode *intended* behaviour, not legacy quirks. 212 tests, only 3 still `characterization`-marked. The list below is historical — see `mem:server/hardening_2026_07` for what each item became.
 
 Also note `INTERNAL_SECRET` is now mandatory: `harness/config.py` supplies it to every service, and a port that ignores it fails `TestBackendsRequireTheGatewaySecret`.
+
+**Updated 2026-07-30 (later)**: 247 tests, ~6m10s cold. `auth`, `gateway` and `sync` are ported to Rust and pass; only `integration` is still Go.
+
+The integration service had no coverage at all for anything needing a third party, which would have let a rewrite pass the suite while silently dropping it. `harness/fake_provider.py` is now a real provider on port 19100 (token/data/history endpoints, bearer required on `/data`, every request recorded), and `tests/test_integration_provider.py` is 35 tests against it. Three paths in there are the ones a port passes by accident:
+
+- **Token refresh must write back** (`service/auth.go:handleTokenRefresh`). Credentials are re-read from Mongo per fetch, so a missing write-back shows up as "the refreshes never stop" rather than as a failure. After `maxTokenRefreshTries` consecutive refresh failures the credentials are *deleted*.
+- **PKCE**: the verifier at the token endpoint must be the preimage of the challenge sent at authorize time, per `state`. A freshly generated verifier satisfies everything else.
+- **Fetched-entity logs** (`multiple` + `logSettings` both required): an item the provider stops returning has its update blanked to `data: null`, not deleted, so the client can retract it.
 
 ## The `characterization` marker (was 28 tests, now 3)
 
