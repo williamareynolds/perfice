@@ -10,7 +10,7 @@ service is only considered done when the suite passes against it.
 | --- | --- |
 | `auth` | **Ported.** Passes the full suite. |
 | `gateway` | **Ported.** Passes the full suite. |
-| `sync` | Not started. |
+| `sync` | **Ported.** Passes the full suite, including the stateful model. |
 | `integration` | Not started. |
 
 Not yet ported within auth: the mail-dependent flows (email confirmation,
@@ -44,7 +44,7 @@ crates/
   proto/        tonic bindings generated from ../proto/auth.proto
   auth/         accounts, sessions, JWT, gRPC + HTTP
   gateway/      routing, CORS, bearer auth, request forwarding
-  sync/         (placeholder)
+  sync/         replication, key verification, salts
   integration/  (placeholder)
 ```
 

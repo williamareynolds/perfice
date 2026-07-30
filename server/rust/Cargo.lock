@@ -1961,6 +1961,23 @@ dependencies = [
 [[package]]
 name = "perfice-sync"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "futures",
+ "mongodb",
+ "perfice-common",
+ "perfice-proto",
+ "rdkafka",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tracing",
+]
 
 [[package]]
 name = "petgraph"

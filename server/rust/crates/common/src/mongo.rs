@@ -10,6 +10,19 @@ use mongodb::{Client, Database};
 
 use crate::config;
 
+/// Connects and returns both the client and the service's database.
+///
+/// The client is needed wherever transactions are: sessions are started from
+/// it, not from a `Database`.
+///
+/// # Panics
+/// Panics when `MONGO_URL` is unset, unparseable, or the server is unreachable.
+pub async fn connect_client(database: &str) -> (Client, Database) {
+    let db = connect(database).await;
+    let client = db.client().clone();
+    (client, db)
+}
+
 /// Connects using `MONGO_URL` and verifies the connection is usable.
 ///
 /// # Panics
