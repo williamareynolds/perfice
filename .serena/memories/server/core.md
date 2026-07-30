@@ -24,6 +24,10 @@ Libraries are wired by `replace perfice.adoe.dev/util => ../util` directives, so
 - **User deletion** fans out over Kafka: auth publishes, sync and integration consume and purge. Any new per-user store needs its own consumer or data outlives the account.
 - **Mongo**: one database per service (`auth`, `sync`, `integration`), never shared. Fields tagged `encrypt:"true"` are transparently encrypted by `mongoutil` using `ENCRYPTION_KEY`.
 
+## Testing
+
+`server/e2e/` holds a Python/pytest black-box conformance suite covering all four services through the gateway — 194 tests, including hypothesis property tests and a stateful model of the sync protocol. It was built as the safety net for a planned Rust rewrite, and its `characterization`-marked tests document the backend's surprising behaviours. Read `mem:server/e2e_tests` before changing any backend behaviour.
+
 ## Symbol navigation limits (gopls, no go.work)
 
 Because each service is its own module with no `go.work`, gopls treats them as separate workspaces. Consequences for Serena's symbol tools:

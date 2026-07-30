@@ -1,0 +1,22 @@
+[project]
+name = "perfice-backend-e2e"
+version = "0.1.0"
+description = "End-to-end conformance suite for the Perfice backend"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.3",
+    "hypothesis>=6.112",
+    "requests>=2.32",
+    "pymongo>=4.9",
+    "PyJWT>=2.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: takes a while (hypothesis-driven or multi-round)",
+    "characterization: pins current Go behaviour that is arguably a bug; read the docstring before 'fixing' it",
+]
+# Show the reason for skips/xfails so a Rust port doesn't silently lose coverage.
+addopts = "-ra --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning"]
