@@ -1,0 +1,235 @@
+# Perfice, whole stack.
+#
+#   cp .env.example .env     # then fill in the secrets it asks for
+#   docker compose up -d --build
+#
+# Then open http://localhost/new.
+#
+# Images are built from *this* checkout rather than pulled. That is deliberate:
+# the published ghcr.io/p0lloc images are upstream's Go backend, which expects
+# Kafka and does not match this tree.
+#
+# ── What is reachable from outside ────────────────────────────────────────────
+#
+# Only `client` (80) and `gateway` (3000) publish ports. Everything else is
+# reachable on the `perfice` network only, and that is load-bearing rather than
+# tidiness: auth, sync and integration trust the `X-Userid` header the gateway
+# injects, so publishing one of their ports would let anyone impersonate any
+# account. `INTERNAL_SECRET` is the second line of defence, not a licence to
+# expose them.
+#
+# To poke at Mongo or RabbitMQ, attach to the network instead of publishing:
+#
+#   docker compose exec mongo mongosh
+#   docker compose exec rabbitmq rabbitmqctl list_queues
+#
+# ── Moving this to a real host ────────────────────────────────────────────────
+#
+# Everything host-specific lives in .env; see the notes there. In short: point
+# PUBLIC_* at your domain, put a TLS-terminating proxy in front of both
+# published ports, and rebuild the client (its backend URL is compiled in).
+
+networks:
+  perfice:
+    driver: bridge
+
+volumes:
+  mongo:
+  rabbitmq:
+
+services:
+  # ── Data stores ─────────────────────────────────────────────────────────────
+
+  # A single-node replica set, not a standalone: applying a sync update runs in
+  # a transaction, which mongod refuses to serve outside a replica set.
+  #
+  # The set initiates itself from the healthcheck below, so there is no manual
+  # `rs.initiate()` step. Nothing else waits on Mongo being *initiated* rather
+  # than merely running, which is why the check has to do both jobs.
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo:/data/db
+    networks:
+      - perfice
+    healthcheck:
+      # Initiate if needed, then report healthy only once this node is actually
+      # PRIMARY -- a set that exists but has not elected anyone still fails
+      # every write.
+      test:
+        [
+          "CMD-SHELL",
+          'mongosh --quiet --eval ''try { rs.status() } catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}) } quit(db.hello().isWritablePrimary ? 0 : 1)''',
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  # Carries the two cross-service events: user.deleted and
+  # user.timezone_changed. Queues and messages are durable, so an event
+  # published while sync or integration is down is waiting when it returns --
+  # which is what stops a deleted account's data from being left behind.
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    networks:
+      - perfice
+    healthcheck:
+      # check_running alone passes before the listener accepts connections.
+      test:
+        [
+          "CMD-SHELL",
+          "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Backend ─────────────────────────────────────────────────────────────────
+
+  auth:
+    image: perfice/auth:local
+    build:
+      context: ./server
+      args:
+        SERVICE: auth
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      GRPC_PORT: 5001
+      HTTP_PORT: 8081
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=rs0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+      BACKEND_BASE_URL: ${PUBLIC_BACKEND_URL:-http://localhost:3000}
+      APP_BASE_URL: ${PUBLIC_APP_URL:-http://localhost/new}
+      # MAILEROO_API_KEY is deliberately unset. With no mail service, email
+      # confirmation is skipped entirely -- which is what lets a fresh instance
+      # register and log in without an SMTP peer. The password-reset routes
+      # answer 400 until one is configured.
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - perfice
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sync:
+    image: perfice/sync:local
+    build:
+      context: ./server
+      args:
+        SERVICE: sync
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET in .env}
+      PORT: 8082
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=rs0
+      AUTH_GRPC_URL: auth:5001
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - perfice
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth:
+        condition: service_started
+    restart: unless-stopped
+
+  integration:
+    image: perfice/integration:local
+    build:
+      context: ./server
+      args:
+        SERVICE: integration
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET in .env}
+      # Exactly 32 bytes. Encrypts provider OAuth tokens and fetched payloads at
+      # rest; changing it makes everything already stored undecryptable.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      PORT: 8080
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=rs0
+      AUTH_GRPC_URL: auth:5001
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+      # Where a provider redirects the browser back to after OAuth, so it has to
+      # be an address *your browser* can reach -- not an internal service name.
+      CALLBACK_URL_BASE: ${PUBLIC_BACKEND_URL:-http://localhost:3000}
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - perfice
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth:
+        condition: service_started
+    restart: unless-stopped
+
+  gateway:
+    image: perfice/gateway:local
+    build:
+      context: ./server
+      args:
+        SERVICE: gateway
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET in .env}
+      PORT: 3000
+      AUTH_GRPC_URL: auth:5001
+      AUTH_HTTP_URL: http://auth:8081
+      SYNC_URL: http://sync:8082
+      INTEGRATION_URL: http://integration:8080
+      # http://localhost is allowed already; add anything else the client is
+      # served from, comma-separated.
+      CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - perfice
+    depends_on:
+      auth:
+        condition: service_started
+      sync:
+        condition: service_started
+      integration:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Client ──────────────────────────────────────────────────────────────────
+
+  # Vite inlines VITE_BACKEND_URL at build time, so the backend address is baked
+  # into the image rather than read at runtime. Changing PUBLIC_BACKEND_URL
+  # means rebuilding this service, not just restarting it.
+  #
+  # It is only a default: the app lets you point at a different backend from the
+  # globe icon in settings, which is stored per browser.
+  client:
+    image: perfice/client:local
+    build:
+      # The repo root, because the client build needs ../android alongside it.
+      context: .
+      dockerfile: client/Dockerfile
+      args:
+        VITE_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:3000}
+    ports:
+      - "${CLIENT_PORT:-80}:80"
+    networks:
+      - perfice
+    depends_on:
+      gateway:
+        condition: service_started
+    restart: unless-stopped

@@ -150,10 +150,11 @@ async fn full_pull(
     // Validated up front so an unknown type is a 400 rather than surfacing
     // from the service layer as an internal error.
     if let Some(types) = &request.entity_types
-        && let Some(unknown) = types.iter().find(|t| !is_known_entity_type(t)) {
-            tracing::debug!(%unknown, "full pull requested an unknown entity type");
-            return Err(ApiError::bad_request("Invalid entity type"));
-        }
+        && let Some(unknown) = types.iter().find(|t| !is_known_entity_type(t))
+    {
+        tracing::debug!(%unknown, "full pull requested an unknown entity type");
+        return Err(ApiError::bad_request("Invalid entity type"));
+    }
 
     let entities = state
         .sync

@@ -26,6 +26,8 @@ One workspace, so a change to `common` or `proto` rebuilds every dependent servi
 - **User deletion** fans out over RabbitMQ: auth publishes `user.deleted`, sync and integration consume and purge. Any new per-user store needs its own queue binding in `crates/common/src/events.rs`, or data outlives the account. `user.timezone_changed` is the other event; integration reschedules pull jobs on it.
 - **Mongo**: one database per service (`auth`, `sync`, `integration`), never shared. Must be a replica set — sync uses a transaction. Provider OAuth tokens and fetched payloads are encrypted at rest with `ENCRYPTION_KEY` (XChaCha20-Poly1305).
 
+Deployment (compose + just) is in `mem:deployment`.
+
 ## Testing
 
 `server/e2e/` holds a Python/pytest black-box conformance suite covering all four services through the gateway — 247 tests, including hypothesis property tests and a stateful model of the sync protocol. It was the safety net for the Rust rewrite and is now the backend's specification. Read `mem:server/e2e_tests` before changing any backend behaviour.

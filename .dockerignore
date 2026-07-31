@@ -1,0 +1,24 @@
+# Installed and built artefacts are recreated inside the image. Copying the
+# host's copies is slow and actively wrong: client/node_modules/perfice-android
+# is a symlink to ../../android that does not resolve in the build context.
+**/node_modules
+**/dist
+**/dist-ssr
+client/dev-dist
+
+# Native build output.
+android/android/build
+android/android/.gradle
+
+# Rust build output, in case the root context is ever used for a server build.
+server/rust/target
+
+# Test scaffolding.
+server/e2e/.build
+server/e2e/.logs
+server/e2e/.hypothesis
+server/e2e/.venv
+**/__pycache__
+
+.git
+.env

@@ -8,11 +8,20 @@ Perfice can run completely without a backend, since it's built as a local-first 
 - Sync: Synchronizing your data between devices (such as your phone)
 - Integrations: Automatically fetching data from remote providers like Fitbit, Todoist, etc
 
-### Running the client
-The easiest way to run the webapp is by using Docker, this will run a bundled version of Perfice with [nginx](https://nginx.org/en/).  
-A [Docker compose file](https://raw.githubusercontent.com/p0lloc/perfice/refs/heads/main/client/docker-compose.yml) exists which you can use to get up and running quickly.   
+### Running everything
+The whole stack -- client, the four backend services, MongoDB and RabbitMQ --
+comes from a single compose file at the repository root. You need Docker and
+[just](https://github.com/casey/just).
 
-Simply download the file into your current directory and run `docker compose up`
+```shell
+just setup    # writes .env with freshly generated secrets
+just up       # builds the images and starts everything
+```
+
+Then open <http://localhost/new>. `just` on its own lists every available task.
+
+The first build compiles the Rust backend and takes several minutes. After that
+it is seconds, since the dependency tree is cached.
 
 ##### Building from source
 You can also build the client from source to produce static HTML/CSS/JS files.
@@ -25,11 +34,37 @@ The built files will be placed in the `dist` folder, ready to be served by your 
 
 Keep in mind that the client is expected to be ran under the `/new` subpath. This might require you to tweak your configuration or place all files under a dummy `new` directory.
 
-### Running the backend
-In order to run the backend you must have a MongoDB database running.
-Similar to the client I've created a [Docker compose file](https://raw.githubusercontent.com/p0lloc/perfice/refs/heads/main/server/docker-compose.yml). Here you can configure the services before running them, such as setting the `MONGO_URL` and `ENCRYPTION_KEY` environment variables.
+### Configuration
+Everything is configured through `.env` at the repository root; `just setup`
+generates one from `.env.example` with real secrets. The values you are most
+likely to change are `PUBLIC_BACKEND_URL` and `PUBLIC_APP_URL` when moving off
+localhost, and `CLIENT_PORT` / `GATEWAY_PORT` if those ports are taken.
 
-Setting `SENTRY_DSN` is not necessary unless you want error reporting with [Sentry](https://sentry.io).
+Three secrets matter:
+
+- `INTERNAL_SECRET` — proves a request came through the gateway. All four
+  services must share the same value. The backends trust the identity headers
+  the gateway injects, so this is what stops anyone who can reach a backend port
+  from impersonating any account.
+- `JWT_SECRET` — signs session tokens.
+- `ENCRYPTION_KEY` — exactly 32 bytes; encrypts provider OAuth tokens and
+  fetched data at rest. Changing it makes what is already stored unreadable.
+
+Only the client and gateway publish ports. Keep it that way: the other services
+are reachable on the internal network only, by design.
+
+### Verifying it works
+```shell
+just smoke
+```
+
+This registers an account, syncs an update between two devices, deletes the
+account and checks every trace of it was purged — which exercises the database,
+the gRPC calls and the message broker in one pass.
 
 ## Architecture
-The backend is built with a microservice architecture, it is split into `gateway`, `auth`, `sync` and `integration` modules. The microservices communicate mainly through gRPC but also use Kafka for publishing events that multiple services might consume.
+The backend is four Rust services -- `gateway`, `auth`, `sync` and
+`integration`. Only the gateway is publicly reachable; it authenticates requests
+and forwards them inward. The services talk to each other over gRPC, and publish
+events (account deletion, timezone changes) over RabbitMQ for the services that
+need to react to them.

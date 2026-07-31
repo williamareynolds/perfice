@@ -20,24 +20,43 @@ Perfice is an open-source self-tracking platform that helps you track anything y
 - **Privacy first**: Data is stored and calculated locally on your device
 - **Exportability**: All data can be exported to/from CSV and JSON
 ## Quick Start
-### Install project dependencies
+
+The whole thing -- client, backend, database, message broker -- runs from one
+compose file. You need Docker and [just](https://github.com/casey/just).
+
+```bash
+just setup    # writes .env with freshly generated secrets
+just up       # builds the images, starts everything, waits until it answers
+just smoke    # optional: proves sync and account deletion actually work
+```
+
+Then open <http://localhost/new>.
+
+The first `just up` compiles the Rust backend and takes several minutes;
+afterwards it is seconds. `just` on its own lists every task.
+
+Port 80 or 3000 already taken? Set `CLIENT_PORT` / `GATEWAY_PORT` in `.env` --
+and if you move the client, add its new origin to `CORS_EXTRA_ORIGINS`, or the
+browser will block every backend call.
+
+### Client only
+
+Perfice is local-first and fully usable with no backend at all; you only need
+one for accounts, cross-device sync and integrations.
+
 ```bash
 cd client
 npm install
-```
-
-### Running the project
-```bash
 npm run dev
 ```
 
-### Building the project for production
+### Building the client for production
+
 ```bash
-npm run build
+cd client && npm run build
 ```
-### Running with Docker
-A basic Dockerfile (and compose file) is provided for building the app with Node and spinning up an nginx server.
-Note that the app runs under the `/new` subpath.
+
+The output in `client/dist` is static files, served under the `/new` subpath.
 
 ## Stack
 Perfice is built with Svelte 5, TypeScript, TailwindCSS and leverages IndexedDB for most data storage.    
@@ -49,10 +68,15 @@ CAPACITOR=true npm run build && npx cap run android
 ```
 
 ## Backend
-User accounts, synchronization and integrations require a backend to function. You can set the service URL locally by clicking the globe (🌐) icon on the settings page. 
-To set a default backend URL, configure the `VITE_BACKEND_URL` environment variable in a `.env` or `.env.development` file in the root of the project.
 
-You can read more about how to setup the backend in the [documentation](https://perfice.adoe.dev/docs/selfhost).
+Four Rust services behind a gateway -- `auth`, `sync`, `integration`, `gateway`
+-- plus MongoDB and RabbitMQ. See [`server/README.md`](server/README.md) for the
+architecture and [`server/rust/README.md`](server/rust/README.md) for the
+internals.
+
+The client picks its backend at runtime from the globe (🌐) icon in settings, so
+one build can point anywhere. `PUBLIC_BACKEND_URL` in `.env` sets the default
+that gets compiled in.
 ## License
 Perfice is licensed under the [MIT license](https://github.com/p0lloc/perfice/blob/main/LICENSE).
 

@@ -19,16 +19,22 @@ Android:
 cd client && CAPACITOR=true npm run build && npx cap run android
 ```
 
-Server (one Cargo workspace at `server/rust`):
-```bash
-cd server/rust
-cargo build --release        # all four binaries -> target/release/perfice-*
-cargo test --workspace
-cargo clippy --all-targets
-cargo fmt --all
+**Everything runs through `just` from the repo root** (`justfile`, added 2026-07-31). `just` with no args lists all tasks.
 
-cd server && ./build.sh      # docker images for all four (REGISTRY/TAG honoured)
-docker compose -f server/docker-compose.yml up   # published ghcr images, not local code
+```bash
+just setup      # generate .env with real secrets (refuses to clobber)
+just up         # build images + start the whole stack + wait until it answers
+just smoke      # end-to-end check against the RUNNING stack
+just down       # stop, keep data;  just destroy = stop and wipe volumes
+just logs sync  # follow one service
+just queues     # rabbitmq queue depths + consumer counts
+just test       # test-server + test-client + test-e2e
+just publish    # build and push images (REGISTRY/TAG)
+```
+
+Underneath, the server is one Cargo workspace at `server/rust`:
+```bash
+cd server/rust && cargo build --release && cargo test --workspace
 ```
 
 Docker image builds must run from the **repo root** (client Dockerfile needs `android/` in context): `sh build-client.sh`.
