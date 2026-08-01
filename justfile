@@ -133,11 +133,10 @@ serve:
     ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
     [ -x "$ts" ] || ts=$(command -v tailscale)
 
+    # This registers the machine as the service's proxy on its own; there is no
+    # separate advertise step. The service stays unreachable until an admin
+    # approves the proxy under admin -> Machines, once per host.
     "$ts" serve --service={{ TS_SERVICE }} --bg --https=443 "http://localhost:${ORIGIN_PORT:-8080}"
-
-    # Serving only configures the service; the node still has to announce that
-    # it hosts it, or the name resolves to nothing.
-    "$ts" advertise --services={{ TS_SERVICE }}
 
     # The service name, not this machine's: same tailnet suffix, different
     # first label.
@@ -149,14 +148,13 @@ serve:
     echo "If that is not what PUBLIC_BACKEND_URL says, update .env to match and"
     echo "run 'just rebuild client' -- the client compiles the URL in."
 
-# Stop serving on the tailnet. Withdraws the advertisement first, so the name
-# stops resolving here before the backing config disappears.
+# Stop serving on the tailnet. `serve clear` also drops the stored config, so
+# re-running `just serve` needs admin approval again.
 unserve:
     #!/usr/bin/env bash
     set -euo pipefail
     ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
     [ -x "$ts" ] || ts=$(command -v tailscale)
-    "$ts" advertise --services=
     "$ts" serve --service={{ TS_SERVICE }} --https=443 off
 
 # Open a mongosh shell.
