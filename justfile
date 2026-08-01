@@ -49,8 +49,21 @@ setup:
 
 # Build images, start everything, and wait until the stack answers.
 up:
+    # One Rust image first, alone. All four share an identical builder stage, so
+    # this populates the cache and the other three then take seconds. Building
+    # them together from cold runs four concurrent `cargo build`s and is enough
+    # memory to get one OOM-killed (SIGKILL compiling mongodb or tokio).
+    docker compose build auth
     docker compose up -d --build
     @just wait
+
+# Not `up -d --build <service>`: this machine's compose (v2.2.3) ignores the
+# service filter for the build step and rebuilds everything, which is both slow
+# and a chance to OOM.
+[doc("Rebuild one service and restart just it.")]
+rebuild service:
+    docker compose build {{ service }}
+    docker compose up -d --no-build {{ service }}
 
 # Stop everything. Data volumes are kept.
 down:
@@ -127,8 +140,8 @@ test-server:
 test-client:
     cd client && npm run test -- --run
 
-# The real gate for backend changes: 247 black-box tests over HTTP.
 # Runs its own throwaway Mongo and RabbitMQ; does not touch your stack.
+[doc("The real gate for backend changes: 247 black-box tests over HTTP.")]
 test-e2e *args:
     cd server/e2e && .venv/bin/pytest {{ args }}
 

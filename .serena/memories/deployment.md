@@ -9,6 +9,8 @@ Set up 2026-07-31. One root `docker-compose.yml` runs everything: web client, th
 - **`ENCRYPTION_KEY` must be exactly 32 bytes.** `openssl rand -hex 16` → 32 chars. The service panics otherwise.
 - **A non-default `CLIENT_PORT` needs a matching `CORS_EXTRA_ORIGINS`.** The gateway's built-in origin list has bare `http://localhost` but not `:8080`. Symptom is nasty: the browser blocks every call while backend logs look perfectly healthy. This machine runs the client on **8080** because kanboard owns port 80.
 - **`COMPOSE_PROJECT_NAME=perfice` lives in `.env`,** not as a top-level `name:` — this machine has Compose v2.2.3 (Docker 20.10.12), which predates that key. Also avoid `service_completed_successfully`.
+- **`docker compose up -d --build <service>` rebuilds *everything* here.** Compose v2.2.3 ignores the service filter for the build step, so a one-line nginx change kicked off four concurrent `cargo build`s and OOM-killed one. Use `just rebuild <service>` (`compose build <svc>` then `up -d --no-build <svc>`). `just up` now builds `auth` alone first to warm the shared builder stage.
+- **`just --list` shows only the LAST comment line** above a recipe. Long explanations there silently become the summary; use `[doc("...")]` for the summary and leave the prose as ordinary comments.
 - **Watch the shell's cwd.** Compose walks up for a compose file; running it from inside `server/` used to find a stale one and start a second, conflicting project. That file is now deleted, but the failure mode is worth remembering.
 
 ## Mongo replica set
@@ -25,5 +27,7 @@ Different jobs, both worth keeping:
 ## Client image caveat
 
 `VITE_BACKEND_URL` is inlined by Vite at **build** time, so changing `PUBLIC_BACKEND_URL` needs `docker compose up -d --build client`, not a restart. It is only the default — the app can be pointed elsewhere at runtime via the globe icon.
+
+`nginx.conf` sets `absolute_redirect off`. Without it, the `/new` → `/new/` redirect is expanded to an absolute URL using nginx's *listen* port (80, inside the container), so on this machine `http://localhost:8080/new` bounced to `http://localhost/new/` — i.e. straight into kanboard. Same trap applies behind any reverse proxy.
 
 The client Dockerfile must build the `android/` Capacitor plugin first (`npm ci --ignore-scripts && npx tsc && npx rollup -c`): the client depends on it as `file:../android`, its `module` entry points at generated `dist/`, and `dist/` is not committed. Without that step the build dies with "Failed to resolve entry for package perfice-android" — upstream's Dockerfile has this bug.
