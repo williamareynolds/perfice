@@ -12,6 +12,10 @@ TAG := env_var_or_default("TAG", "latest")
 
 SERVICES := "auth sync gateway integration"
 
+# Tailscale service name. Gives the stack its own tailnet DNS name, independent
+# of whichever machine happens to be hosting it.
+TS_SERVICE := env_var_or_default("TS_SERVICE", "svc:perfice")
+
 _default:
     @just --list --unsorted
 
@@ -115,7 +119,11 @@ smoke:
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
 
-# Only devices signed into your tailnet can reach it -- this does NOT expose
+# Published as a Tailscale *service* rather than on the machine's own name, so
+# the URL is perfice.<tailnet>.ts.net and does not change if this moves to
+# another host -- no client rebuild, no re-pointing anything.
+#
+# Only devices signed into your tailnet can reach it. This does NOT expose
 # anything to the public internet (that would be `tailscale funnel`, which you
 # do not want here: the backends trust the X-Userid header the gateway sets).
 [doc("Publish the stack on your tailnet over HTTPS. Idempotent; survives reboots.")]
@@ -124,21 +132,32 @@ serve:
     set -euo pipefail
     ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
     [ -x "$ts" ] || ts=$(command -v tailscale)
-    "$ts" serve --bg --https=443 "http://localhost:${ORIGIN_PORT:-8080}"
-    name=$("$ts" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
+
+    "$ts" serve --service={{ TS_SERVICE }} --bg --https=443 "http://localhost:${ORIGIN_PORT:-8080}"
+
+    # Serving only configures the service; the node still has to announce that
+    # it hosts it, or the name resolves to nothing.
+    "$ts" advertise --services={{ TS_SERVICE }}
+
+    # The service name, not this machine's: same tailnet suffix, different
+    # first label.
+    suffix=$("$ts" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip(".").split(".", 1)[1])')
+    name="${TS_SERVICE#svc:}.${suffix}"
     echo
     echo "Serving at https://${name}/new/"
     echo
     echo "If that is not what PUBLIC_BACKEND_URL says, update .env to match and"
     echo "run 'just rebuild client' -- the client compiles the URL in."
 
-# Stop serving on the tailnet.
+# Stop serving on the tailnet. Withdraws the advertisement first, so the name
+# stops resolving here before the backing config disappears.
 unserve:
     #!/usr/bin/env bash
     set -euo pipefail
     ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
     [ -x "$ts" ] || ts=$(command -v tailscale)
-    "$ts" serve --https=443 off
+    "$ts" advertise --services=
+    "$ts" serve --service={{ TS_SERVICE }} --https=443 off
 
 # Open a mongosh shell.
 mongo:
