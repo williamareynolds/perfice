@@ -28,6 +28,8 @@ Different jobs, both worth keeping:
 
 `VITE_BACKEND_URL` is inlined by Vite at **build** time, so changing `PUBLIC_BACKEND_URL` needs `docker compose up -d --build client`, not a restart. It is only the default — the app can be pointed elsewhere at runtime via the globe icon.
 
+The `/new` redirect is a **302, and must stay one**. It was a 301, browsers cached it permanently, and the bad Location below then survived every server-side fix — curl showed the fix working while the browser kept going to the old target. Clearing it needs a private window or a cache clear; a normal reload will not.
+
 `nginx.conf` sets `absolute_redirect off`. Without it, the `/new` → `/new/` redirect is expanded to an absolute URL using nginx's *listen* port (80, inside the container), so on this machine `http://localhost:8080/new` bounced to `http://localhost/new/` — i.e. straight into kanboard. Same trap applies behind any reverse proxy.
 
 The client Dockerfile must build the `android/` Capacitor plugin first (`npm ci --ignore-scripts && npx tsc && npx rollup -c`): the client depends on it as `file:../android`, its `module` entry points at generated `dist/`, and `dist/` is not committed. Without that step the build dies with "Failed to resolve entry for package perfice-android" — upstream's Dockerfile has this bug.
