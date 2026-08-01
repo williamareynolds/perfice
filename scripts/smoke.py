@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import ssl
 import subprocess
 import sys
 import time
@@ -43,6 +44,28 @@ class Failure(Exception):
     pass
 
 
+def _ssl_context() -> ssl.SSLContext | None:
+    """Work around a Python install with no trust store.
+
+    The python.org macOS builds ship without a CA bundle unless you run their
+    `Install Certificates.command`, so HTTPS fails with CERTIFICATE_VERIFY_FAILED
+    against a certificate that curl and every browser accept -- which looks like
+    a server problem and is not one. certifi, if present, has the same roots.
+
+    Returns None to mean "the default is fine", including for plain http.
+    """
+    if ssl.get_default_verify_paths().cafile:
+        return None
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+SSL_CONTEXT = _ssl_context()
+
+
 def call(method: str, path: str, body=None, token: str | None = None):
     request = urllib.request.Request(f"{GATEWAY}{path}", method=method)
     request.add_header("content-type", "application/json")
@@ -51,7 +74,9 @@ def call(method: str, path: str, body=None, token: str | None = None):
 
     payload = json.dumps(body).encode() if body is not None else None
     try:
-        with urllib.request.urlopen(request, payload, timeout=30) as response:
+        with urllib.request.urlopen(
+            request, payload, timeout=30, context=SSL_CONTEXT
+        ) as response:
             raw = response.read()
             return response.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as err:
@@ -81,7 +106,9 @@ def step(message: str) -> None:
 def check_client() -> None:
     print("client")
     try:
-        with urllib.request.urlopen(f"{CLIENT}/new/", timeout=15) as response:
+        with urllib.request.urlopen(
+            f"{CLIENT}/new/", timeout=15, context=SSL_CONTEXT
+        ) as response:
             if response.status != 200:
                 raise Failure(f"client answered {response.status}")
     except urllib.error.URLError as err:
