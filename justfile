@@ -92,14 +92,14 @@ logs *services:
 wait:
     #!/usr/bin/env bash
     set -euo pipefail
-    gateway="http://localhost:${GATEWAY_PORT:-3000}/auth/me"
-    client="http://localhost:${CLIENT_PORT:-80}/new/"
+    # Both through Caddy, which is how a browser will reach them.
+    origin="http://localhost:${ORIGIN_PORT:-8080}"
     for i in $(seq 1 60); do
         # 401 from /auth/me is a healthy answer: it means routing and the
         # internal-secret check both work, we just did not send a token.
-        code=$(curl -s -o /dev/null -w '%{http_code}' "$gateway" || true)
-        if [ "$code" = "401" ] && curl -sfo /dev/null "$client"; then
-            echo "Ready: app on ${client}, backend on http://localhost:${GATEWAY_PORT:-3000}"
+        code=$(curl -s -o /dev/null -w '%{http_code}' "$origin/auth/me" || true)
+        if [ "$code" = "401" ] && curl -sfo /dev/null "$origin/new/"; then
+            echo "Ready: ${origin}/new/"
             exit 0
         fi
         sleep 2
@@ -108,9 +108,37 @@ wait:
     docker compose logs --tail=40 >&2
     exit 1
 
-# End-to-end check against the running stack: register, log in, sync, delete.
+# Pass SMOKE_ORIGIN=https://<name>.ts.net to check it over Tailscale instead.
+[doc("End-to-end check against the running stack: register, log in, sync, delete.")]
 smoke:
     ./scripts/smoke.py
+
+# ── Tailscale ─────────────────────────────────────────────────────────────────
+
+# Only devices signed into your tailnet can reach it -- this does NOT expose
+# anything to the public internet (that would be `tailscale funnel`, which you
+# do not want here: the backends trust the X-Userid header the gateway sets).
+[doc("Publish the stack on your tailnet over HTTPS. Idempotent; survives reboots.")]
+serve:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+    [ -x "$ts" ] || ts=$(command -v tailscale)
+    "$ts" serve --bg --https=443 "http://localhost:${ORIGIN_PORT:-8080}"
+    name=$("$ts" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
+    echo
+    echo "Serving at https://${name}/new/"
+    echo
+    echo "If that is not what PUBLIC_BACKEND_URL says, update .env to match and"
+    echo "run 'just rebuild client' -- the client compiles the URL in."
+
+# Stop serving on the tailnet.
+unserve:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+    [ -x "$ts" ] || ts=$(command -v tailscale)
+    "$ts" serve --https=443 off
 
 # Open a mongosh shell.
 mongo:
@@ -169,7 +197,7 @@ publish-build:
             server
     done
     docker build -f client/Dockerfile \
-        --build-arg "VITE_BACKEND_URL=${PUBLIC_BACKEND_URL:-http://localhost:3000}" \
+        --build-arg "VITE_BACKEND_URL=${PUBLIC_BACKEND_URL:-http://localhost:8080}" \
         -t "{{ REGISTRY }}/perfice_client:{{ TAG }}" .
 
 # Push the images built by publish-build.

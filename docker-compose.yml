@@ -194,8 +194,10 @@ services:
       AUTH_HTTP_URL: http://auth:8081
       SYNC_URL: http://sync:8082
       INTEGRATION_URL: http://integration:8080
-      # http://localhost is allowed already; add anything else the client is
-      # served from, comma-separated.
+      # Normally empty: the client is served from the same origin as the API
+      # (see caddy/Caddyfile), so the browser never sends a cross-origin
+      # request. Only needed if something reaches the gateway's own port
+      # directly -- `npm run dev`, say.
       CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
       RUST_LOG: ${RUST_LOG:-info}
     networks:
@@ -224,12 +226,33 @@ services:
       context: .
       dockerfile: client/Dockerfile
       args:
-        VITE_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:3000}
-    ports:
-      - "${CLIENT_PORT:-80}:80"
+        # Same origin the page is served from, so this is the Caddy address and
+        # not the gateway's own port.
+        VITE_BACKEND_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8080}
+    # Not published: Caddy is the only way in, so that everything is one origin.
     networks:
       - perfice
     depends_on:
       gateway:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Front door ──────────────────────────────────────────────────────────────
+
+  # Serves the client and the API from a single origin, which is what removes
+  # CORS from the picture entirely. `tailscale serve` terminates TLS in front of
+  # this; see caddy/Caddyfile.
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${ORIGIN_PORT:-8080}:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - perfice
+    depends_on:
+      gateway:
+        condition: service_started
+      client:
         condition: service_started
     restart: unless-stopped

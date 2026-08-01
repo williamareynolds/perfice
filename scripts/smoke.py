@@ -26,8 +26,13 @@ import urllib.error
 import urllib.request
 import uuid
 
-GATEWAY = f"http://localhost:{os.environ.get('GATEWAY_PORT', '3000')}"
-CLIENT = f"http://localhost:{os.environ.get('CLIENT_PORT', '80')}"
+# Everything goes through Caddy on one origin, which is what a browser does --
+# so this also proves the proxy's route list still matches the gateway's.
+ORIGIN = os.environ.get("SMOKE_ORIGIN") or (
+    f"http://localhost:{os.environ.get('ORIGIN_PORT', '8080')}"
+)
+GATEWAY = ORIGIN
+CLIENT = ORIGIN
 PASSWORD = "smoke-test-correct-horse-battery"
 
 # How long to wait for an event to cross RabbitMQ and be applied.

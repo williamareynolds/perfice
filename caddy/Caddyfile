@@ -1,0 +1,41 @@
+# Single origin for the whole app.
+#
+# Everything -- the web client and the API -- is served from one hostname, so
+# the browser never makes a cross-origin request and CORS does not enter into
+# it. That is the point: two origins means PUBLIC_BACKEND_URL and
+# CORS_EXTRA_ORIGINS have to agree, and when they do not the browser silently
+# blocks every call while the backend logs look perfectly healthy.
+#
+# TLS is terminated by `tailscale serve` in front of this, which is why this
+# listens on plain HTTP. Do not publish this port to the internet: over the
+# tailnet the hop is inside WireGuard, but on a public interface it is not.
+
+:80 {
+	log {
+		output stderr
+		format console
+	}
+
+	# ── Gateway ───────────────────────────────────────────────────────────────
+	#
+	# These are every top-level path the gateway claims, from its router in
+	# server/rust/crates/gateway/src/main.rs. If a route is ever added there
+	# with a new top-level prefix, it has to be added here too, or it will fall
+	# through to the client and come back as the SPA's index.html -- which
+	# looks like a JSON parse error, not a routing mistake.
+	#
+	# The bare and trailing-slash forms are both listed because `/integrations`
+	# is a real route and `/integrations/*` does not match it.
+	@gateway path /auth/* /feedback /api/* /integrations /integrations/* /integrationTypes /integrationTypes/* /updates /updates/*
+	handle @gateway {
+		reverse_proxy gateway:3000
+	}
+
+	# ── Client ────────────────────────────────────────────────────────────────
+	#
+	# Everything else. nginx inside the client image serves the SPA under /new/
+	# and redirects / to it.
+	handle {
+		reverse_proxy client:80
+	}
+}

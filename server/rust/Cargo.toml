@@ -16,5 +16,9 @@ all = { level = "warn", priority = -1 }
 # The e2e suite builds in release: argon2 is configured for 64 MiB / 3 passes,
 # which is punishingly slow in an unoptimized build (a single login takes
 # seconds rather than tens of milliseconds) and makes the suite appear to hang.
-[profile.release]
-debug = 1
+#
+# No `debug = 1` here. It made every binary 145 MB against 21 MB without, and
+# that is 500 MB of DWARF across four images to push over a home connection on
+# every deploy. The ELF symbol table survives either way, so panics still name
+# the functions involved -- only file/line numbers are lost. Turn it back on
+# locally (`RUSTFLAGS=-Cdebuginfo=1`) when chasing something that needs them.
