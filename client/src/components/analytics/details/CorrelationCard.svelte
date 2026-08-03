@@ -5,7 +5,12 @@
     import IconButton from "@perfice/components/base/button/IconButton.svelte";
     import DualLineChart from "@perfice/components/chart/DualLineChart.svelte";
     import {normalizeNumberArray} from "@perfice/services/analytics/analytics.js";
-    import {ellipsis} from "@perfice/services/analytics/display.js";
+    import {
+        describeCorrelationStrength,
+        ellipsis,
+        formatPValue,
+        formatSampleSize
+    } from "@perfice/services/analytics/display.js";
     import CorrelationMessage from "@perfice/components/analytics/details/CorrelationMessage.svelte";
     import {formatSimpleTimestamp} from "@perfice/model/variable/ui";
 
@@ -63,6 +68,12 @@
         correlation.display.second.entityName, chartVisible));
 
     let labels = $derived(constructDataPointLabels(correlation.value.timestamps));
+
+    let strength = $derived(describeCorrelationStrength(correlation.value.coefficient));
+    let sampleSizeLabel = $derived(formatSampleSize(correlation.value.sampleSize, correlation.timeScope));
+    // The corrected value, not the raw one: hundreds of pairs are tested per
+    // run, so an uncorrected p understates how easily this could be a fluke.
+    let pValueLabel = $derived(formatPValue(correlation.value.qValue));
 </script>
 <div class="bg-white dark:bg-gray-800 dark-border rounded border p-2 {className} flex flex-col justify-between">
     <div>
@@ -92,8 +103,16 @@
                 full={fullBar}
                 coefficient={correlation.value.coefficient}
         />
-        <div class="flex justify-end text-gray-400 font-bold">
-            {Math.round(correlation.value.coefficient * 100)}%
+        <!--
+            The coefficient used to be rendered as a percentage, which reads as
+            "half the time" rather than what r actually is. Strength plus the
+            evidence behind it is what tells you whether to believe it.
+        -->
+        <div class="flex justify-between items-baseline text-gray-400 text-sm">
+            <span>{strength} · {sampleSizeLabel}</span>
+            <span class="font-bold" title="Chance of seeing a relationship this strong if there were none, adjusted for every pair tested">
+                {pValueLabel}
+            </span>
         </div>
     </div>
 </div>

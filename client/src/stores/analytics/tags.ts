@@ -4,6 +4,7 @@ import {SimpleTimeScopeType} from "@perfice/model/variable/time/time";
 import {
     AnalyticsService,
     type CorrelationResult,
+    MINIMUM_CORRELATION_SAMPLE_SIZE,
     TAG_KEY_PREFIX,
     type TagWeekDayAnalytics
 } from "@perfice/services/analytics/analytics";
@@ -99,7 +100,7 @@ export function TagDetailedAnalytics(id: string,
 
     if (timeScope != SimpleTimeScopeType.DAILY) {
         // Differing time scope requires a new analytics result
-        return readable(createPromise(id, analytics.getSpecificAnalytics(new Date(), 30, 5), analyticsService, timeScope));
+        return readable(createPromise(id, analytics.getSpecificAnalytics(new Date(), 30, MINIMUM_CORRELATION_SAMPLE_SIZE), analyticsService, timeScope));
     } else {
         // Use cached value from analytics store
         return derived([analytics], ([$res], set) => {

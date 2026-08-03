@@ -11,7 +11,11 @@ import {AsyncStore} from "@perfice/stores/store";
 import type {Tag} from "@perfice/model/tag/tag";
 import {convertResultKey, type CorrelationDisplay} from "@perfice/services/analytics/display";
 import type {AnalyticsSettingsService} from "@perfice/services/analytics/settings";
-import type {AnalyticsHistoryEntry, AnalyticsHistoryService} from "@perfice/services/analytics/history";
+import {
+    type AnalyticsHistoryEntry,
+    type AnalyticsHistoryService,
+    DEFAULT_SIGNIFICANCE_LEVEL
+} from "@perfice/services/analytics/history";
 import type {AnalyticsSettings} from "@perfice/model/analytics/analytics";
 import type {CorrelationIgnoreService} from "@perfice/services/analytics/ignore";
 
@@ -103,7 +107,14 @@ export interface DetailCorrelation {
 
 export function createDetailedCorrelations(correlations: Map<string, CorrelationResult>, result: AnalyticsResult, search: string, timeScope: SimpleTimeScopeType): DetailCorrelation[] {
     return correlations.entries()
-        .filter(([k, v]) => k.includes(search) && Math.abs(v.coefficient) > 0.2)
+        // A coefficient above 0.2 was the whole test here, which on a short
+        // window is satisfied by almost any pair of series. The corrected
+        // p-value is what decides whether there is anything to look at; the
+        // coefficient floor only keeps trivially small effects out once there
+        // is enough data to make them detectable.
+        .filter(([k, v]) => k.includes(search)
+            && v.qValue < DEFAULT_SIGNIFICANCE_LEVEL
+            && Math.abs(v.coefficient) > 0.2)
         .map(([key, value]) => {
             return {
                 key,

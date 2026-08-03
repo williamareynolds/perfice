@@ -20,11 +20,23 @@ import {WEEK_DAY_TO_NAME} from "@perfice/util/time/format";
 import type {AnalyticsSettings} from "@perfice/model/analytics/analytics";
 import type {Tag} from "@perfice/model/tag/tag";
 import type {JournalEntry} from "@perfice/model/journal/journal";
+import {benjaminiHochberg, pearsonPValue} from "@perfice/services/analytics/significance";
 
 export const WEEK_DAY_KEY_PREFIX = "wd_";
 export const CATEGORICAL_KEY_PREFIX = "cat_";
 export const LAG_KEY_PREFIX = "lag_";
 export const TAG_KEY_PREFIX = "tag_";
+
+/**
+ * Fewest overlapping days before a pair is worth testing at all.
+ *
+ * Ten is not enough to detect a subtle relationship -- it takes |r| > 0.63 to
+ * reach significance there -- but it is the point where a coefficient stops
+ * being arithmetic on noise. Below it, a pair costs power without ever being
+ * able to repay it: every test enlarges the multiple-comparison correction
+ * applied to every other, so hopeless pairs make real findings harder to see.
+ */
+export const MINIMUM_CORRELATION_SAMPLE_SIZE = 10;
 
 export enum DatasetKeyType {
     QUANTITATIVE,
@@ -138,6 +150,20 @@ export interface CorrelationResult {
     second: number[];
     sampleSize: number;
     timestamps: number[];
+
+    /**
+     * Probability of a coefficient at least this extreme if the two were
+     * unrelated. Accounts for sample size, which the coefficient alone does not.
+     */
+    pValue: number;
+
+    /**
+     * `pValue` corrected for how many correlations were tested in the same run
+     * (Benjamini-Hochberg). This is the one to filter on: we test every pair
+     * against every other, so uncorrected p-values would surface a steady
+     * trickle of coincidences no matter what the data said.
+     */
+    qValue: number;
 }
 
 export type BasicAnalytics = {
@@ -757,12 +783,33 @@ export class AnalyticsService {
                     second: matching.second,
                     lagged: firstLag,
                     sampleSize,
-                    timestamps: matching.timestamps
+                    timestamps: matching.timestamps,
+                    pValue: pearsonPValue(coefficient, sampleSize),
+                    // Filled in below, once the size of the batch is known.
+                    qValue: 1
                 });
             }
         }
 
+        this.applyMultipleComparisonCorrection(results);
         return results;
+    }
+
+    /**
+     * Corrects every p-value in a batch for the number of tests in that batch.
+     *
+     * This has to happen across the whole run rather than per correlation: the
+     * correction depends on how many comparisons were made, and we make one for
+     * every pair of tracked things plus a lagged copy of each. That is easily
+     * several hundred tests, which produces double-digit false positives at an
+     * uncorrected 5% cutoff.
+     */
+    private applyMultipleComparisonCorrection(results: Map<string, CorrelationResult>) {
+        let entries = [...results.values()];
+        if (entries.length == 0) return;
+
+        let qValues = benjaminiHochberg(entries.map(e => e.pValue));
+        entries.forEach((entry, i) => entry.qValue = qValues[i]);
     }
 
     pearsonCorrelation(x: number[], y: number[]): number {

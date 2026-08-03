@@ -95,6 +95,36 @@ export function convertResultKey(key: string, result: CorrelationResult, timeSco
     }
 }
 
+/**
+ * Formats a p-value the way papers do, because the exact figure stops carrying
+ * meaning once it is small: below a thousandth, what matters is "very unlikely
+ * to be chance", not the digits.
+ */
+export function formatPValue(p: number): string {
+    if (p < 0.001) return "p < 0.001";
+    if (p < 0.01) return `p = ${numberToMaxDecimals(p, 3)}`;
+    return `p = ${numberToMaxDecimals(p, 2)}`;
+}
+
+/**
+ * Plain-language strength, using the conventional bands for a correlation
+ * coefficient. Deliberately not a percentage: r is not a proportion of
+ * anything, and showing "50%" invites reading it as "half the time".
+ */
+export function describeCorrelationStrength(coefficient: number): string {
+    const magnitude = Math.abs(coefficient);
+    if (magnitude >= 0.7) return "strong";
+    if (magnitude >= 0.5) return "moderate";
+    if (magnitude >= 0.3) return "weak";
+    return "very weak";
+}
+
+/** How much data the correlation rests on, which is half of how much to trust it. */
+export function formatSampleSize(sampleSize: number, timeScope: SimpleTimeScopeType): string {
+    const unit = TIME_SCOPE_UNITS[timeScope];
+    return `${sampleSize} ${unit}${sampleSize == 1 ? "" : "s"}`;
+}
+
 export interface InsightText {
     text: string;
     percentage: string;

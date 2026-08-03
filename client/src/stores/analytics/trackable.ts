@@ -11,6 +11,7 @@ import {
     type CategoricalWeekDayAnalytics,
     convertValue,
     type CorrelationResult,
+    MINIMUM_CORRELATION_SAMPLE_SIZE,
     isAnalyticsSupportedQuestion,
     type QuantitativeWeekDayAnalytics,
     type ValueBag
@@ -218,7 +219,7 @@ export function TrackableDetailedAnalytics(id: string, rawQuestionId: string | n
     /*
         if (timeScope != SimpleTimeScopeType.DAILY) {
             // Differing time scope requires a new analytics result
-            return readable(createPromise(id, rawQuestionId, timeScope, analytics.getSpecificAnalytics(new Date(), 30, 5), trackableService,
+            return readable(createPromise(id, rawQuestionId, timeScope, analytics.getSpecificAnalytics(new Date(), 30, MINIMUM_CORRELATION_SAMPLE_SIZE), trackableService,
                 formService, settingsService, analyticsService));
         } else {
             */
